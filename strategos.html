@@ -74,9 +74,9 @@
             Rogue:    {hp:12, mov:2, cost:2, weight:1, rng:3, tileTarget:true,  blocks:false, firebolt:false, diag_move:false, diag_atk:true,  cleave:0, atk_type:'Piercing', atk:{P:8,Me:3,Ex:9,Ma:1}, dfn:{P:5,Me:3,Ex:6,Ma:3}},
             Assassin: {hp:14, mov:3, cost:3, weight:1, rng:3, tileTarget:true,  blocks:false, firebolt:false, diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Piercing', atk:{P:10,Me:5,Ex:2,Ma:1}, dfn:{P:6,Me:4,Ex:5,Ma:5}},
             Squire:   {hp:12, mov:1, cost:1, weight:3, rng:1, tileTarget:false, blocks:true,  firebolt:false, diag_move:false, diag_atk:false, cleave:0, atk_type:'Melee',    atk:{P:1,Me:5,Ex:1,Ma:1}, dfn:{P:4,Me:5,Ex:3,Ma:2}},
-            Knight:   {hp:22, mov:2, cost:2, weight:3, rng:1, tileTarget:false, blocks:true,  firebolt:false, diag_move:false, diag_atk:true,  cleave:1, atk_type:'Melee',    atk:{P:2,Me:10,Ex:1,Ma:1}, dfn:{P:7,Me:8,Ex:5,Ma:3}},
-            Paladin:  {hp:28, mov:2, cost:3, weight:3, rng:1, tileTarget:false, blocks:true,  firebolt:false, diag_move:false, diag_atk:true,  cleave:4, atk_type:'Melee',    atk:{P:3,Me:14,Ex:1,Ma:2}, dfn:{P:9,Me:10,Ex:7,Ma:4}},
-            Adept:    {hp:10, mov:1, cost:1, weight:2, rng:3, tileTarget:false, blocks:false, firebolt:true,  diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Magic',    atk:{P:1,Me:1,Ex:1,Ma:5}, dfn:{P:2,Me:2,Ex:3,Ma:5}},
+            Knight:   {hp:22, mov:2, cost:2, weight:3, rng:1, tileTarget:false, blocks:true,  firebolt:false, diag_move:false, diag_atk:true,  cleave:1, atk_type:'Melee',    atk:{P:2,Me:8,Ex:1,Ma:1}, dfn:{P:7,Me:8,Ex:5,Ma:3}},
+            Paladin:  {hp:28, mov:2, cost:3, weight:3, rng:1, tileTarget:false, blocks:true,  firebolt:false, diag_move:false, diag_atk:true,  cleave:4, atk_type:'Melee',    atk:{P:3,Me:12,Ex:1,Ma:2}, dfn:{P:9,Me:10,Ex:7,Ma:4}},
+            Adept:    {hp:10, mov:1, cost:1, weight:2, rng:3, tileTarget:false, blocks:false, firebolt:true,  diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Magic',    atk:{P:1,Me:1,Ex:1,Ma:6}, dfn:{P:2,Me:2,Ex:3,Ma:5}},
             Mage:     {hp:14, mov:2, cost:2, weight:2, rng:3, tileTarget:true,  blocks:false, firebolt:true,  diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Magic',    atk:{P:1,Me:1,Ex:1,Ma:10}, dfn:{P:3,Me:2,Ex:4,Ma:8}},
             Archmage: {hp:18, mov:2, cost:3, weight:2, rng:4, tileTarget:true,  blocks:false, firebolt:true,  diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Magic',    atk:{P:1,Me:2,Ex:1,Ma:14}, dfn:{P:4,Me:3,Ex:5,Ma:10}}
         };
@@ -1303,6 +1303,25 @@
                     this.buildAnimationFromResolution(allUnits, origPos, animAttacks);
                     return;
                 }
+
+                // ===== READIED SHOT =====
+                // Archers automatically fire a half-damage reaction shot at
+                // any armored (weight 3) enemy that ended up adjacent after
+                // movement. Triggers once per Archer per turn.
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (u.type !== 'Archer' || u.hp <= 0) continue;
+                    let enemies = u.player === 1 ? this.p2Units : this.p1Units;
+                    for (let e of enemies) {
+                        if (e.hp <= 0 || STATS[e.type].weight !== 3) continue;
+                        let dr = Math.abs(u.r - e.r), dc = Math.abs(u.c - e.c);
+                        if (dr <= 1 && dc <= 1 && (dr + dc) > 0) {
+                            this.hit(u, e, true, 'P', 1, 0, 'Readied Shot');
+                            break; // one shot per Archer
+                        }
+                    }
+                }
+                this.p1Units = this.p1Units.filter(u => u.hp > 0);
+                this.p2Units = this.p2Units.filter(u => u.hp > 0);
 
                 // ===== TRAP RESOLUTION =====
                 // 1) Promote any newly-planned traps to live board traps.
@@ -4025,6 +4044,10 @@
                 // Tooltip on hover
                 if (hovered) {
                     const UPDATES = [
+                        {ver: 'v0.7', items: [
+                            'Balance: Knight Melee 10→8, Paladin Melee 14→12, Adept Magic 5→6',
+                            'New Archer passive: Readied Shot — auto half-damage vs adjacent armored units',
+                        ]},
                         {ver: 'v0.6', items: [
                             'Damage inspection: action phase pauses so you can hover damage markers',
                             'Hover shows attacker highlights, ghost sprites for killed units, and a damage breakdown tooltip',
@@ -6488,10 +6511,10 @@
                         flavor: 'The reliable workhorse of the melee line.',
                         abilities: [
                             { name: 'Basic attack',
-                              dmg:  '10 Melee damage',
-                              rule: 'Hit any of 8 adjacent squares. Cleaves 1 adjacent enemy for half (5 Melee).' },
+                              dmg:  '8 Melee damage',
+                              rule: 'Hit any of 8 adjacent squares. Cleaves 1 adjacent enemy for half (4 Melee).' },
                             { name: 'Charge (move 2 straight)',
-                              dmg:  '20 Melee to main + 5 Melee to cleave + 5 Melee trample',
+                              dmg:  '16 Melee to main + 4 Melee to cleave + 4 Melee trample',
                               rule: 'Move 2 squares in a straight line then attack — main target takes DOUBLE damage, the cleaved neighbour takes HALF, and any lighter enemy standing on the mid-tile you rode through takes HALF (trample). You can aim the charge at an enemy-occupied square: lighter defenders get bumped aside, equal-weight defenders resolve by HP.' },
                             { name: 'Ironfoot (passive)',
                               dmg:  '—',
@@ -6505,10 +6528,10 @@
                         flavor: 'A devastating anchor that buffs allies and cleaves crowds.',
                         abilities: [
                             { name: 'Basic attack',
-                              dmg:  '14 Melee damage',
-                              rule: 'Hit any of 8 adjacent squares. Cleaves up to 4 adjacent enemies for half (7 Melee each).' },
+                              dmg:  '12 Melee damage',
+                              rule: 'Hit any of 8 adjacent squares. Cleaves up to 4 adjacent enemies for half (6 Melee each).' },
                             { name: 'Charge (move 2 straight)',
-                              dmg:  '28 Melee to main + 7 per cleave + 7 Melee trample',
+                              dmg:  '24 Melee to main + 6 per cleave + 6 Melee trample',
                               rule: 'Move 2 in a line then attack — main target takes DOUBLE damage, every cleaved neighbour takes HALF, and any lighter enemy on the mid-tile you rode through takes HALF (trample). You can aim the charge at an enemy-occupied square: lighter defenders get bumped aside, equal-weight defenders resolve by HP.' },
                             { name: 'Ironfoot (passive)',
                               dmg:  '—',
@@ -6527,6 +6550,9 @@
                             { name: 'Aimed Shot',
                               dmg:  '6 Piercing',
                               rule: 'Pick a tile within Chebyshev 2 of your planned position. At resolve, the arrow strikes whoever ends up on that tile — or nothing.' },
+                            { name: 'Readied Shot (passive)',
+                              dmg:  '3 Piercing (half damage)',
+                              rule: 'When an armored enemy (Squire, Knight, or Paladin) ends up adjacent after movement, this Archer automatically fires a half-damage reaction shot. Triggers once per turn.' },
                             { name: 'High Ground ⇑ (amplifier)',
                               dmg:  '+1 range',
                               rule: 'Back-row archers gain +1 range (3 instead of 2).' },
@@ -6576,7 +6602,7 @@
                         flavor: 'Cheap magic specialist; fires fireballs forward.',
                         abilities: [
                             { name: 'Firebolt',
-                              dmg:  '5 Magic (2 Magic on pierced target)',
+                              dmg:  '6 Magic (3 Magic on pierced target)',
                               rule: 'Directional magic bolt — range 3, straight or diagonal. Pierces the first target for half, continues through. Adepts can\'t lob fire, they must aim a line.' },
                             { name: 'Arcing Firebolt ✺ (amplifier)',
                               dmg:  'Center ×2.5 + 3 splash hits',
