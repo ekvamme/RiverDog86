@@ -3999,6 +3999,88 @@
                 this.ctx.fillStyle = '#b2aca4';
                 this.ctx.font = '12px Arial';
                 this.ctx.fillText('Keyboard shortcuts: 1 / 2 / 3 / 4 / 5', CANVAS_W / 2, UI_TOP + 336);
+
+                // ---- Updates icon (bottom-right of UI panel) ----
+                let iconX = CANVAS_W - 42, iconY = CANVAS_H - 80;
+                let iconR = 18;
+                let hovered = Math.sqrt((mouseCanvasX - iconX) ** 2 + (mouseCanvasY - iconY) ** 2) < iconR + 6;
+                // Icon circle
+                this.ctx.save();
+                this.ctx.fillStyle = hovered ? 'rgba(60,80,120,0.95)' : 'rgba(40,40,50,0.8)';
+                this.ctx.beginPath();
+                this.ctx.arc(iconX, iconY, iconR, 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.strokeStyle = hovered ? '#9af0ff' : '#706a64';
+                this.ctx.lineWidth = 1.5;
+                this.ctx.stroke();
+                // Bell/update glyph
+                this.ctx.fillStyle = hovered ? '#fff' : '#b2aca4';
+                this.ctx.font = 'bold 14px Arial';
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.font = 'bold 18px Arial';
+                this.ctx.fillText('📋', iconX, iconY);
+                this.ctx.restore();
+
+                // Tooltip on hover
+                if (hovered) {
+                    const UPDATES = [
+                        {ver: 'v0.6', items: [
+                            'Damage inspection: action phase pauses so you can hover damage markers',
+                            'Hover shows attacker highlights, ghost sprites for killed units, and a damage breakdown tooltip',
+                            'Amplifier badge hover tooltips — hover synergy icons above units for details',
+                            'Ironfoot passive added to Knight & Paladin tutorials',
+                        ]},
+                        {ver: 'v0.5', items: [
+                            'Trap placement restricted to 2-tile range with visual highlights',
+                            'Click an already-ordered unit during planning to redo its orders',
+                        ]},
+                        {ver: 'v0.4', items: [
+                            'AI melee attack fix — AI now targets where enemies will be, not where they were',
+                            'Removed dead code and duplicate rendering logic',
+                            'AI harness (ai_vs_ai.js) now uses relative paths and includes beacon field',
+                        ]},
+                    ];
+                    let lineH = 16;
+                    let headerH = 20;
+                    let totalLines = 0;
+                    for (let u of UPDATES) totalLines += 1 + u.items.length;
+                    let tipW = 420;
+                    let tipH = totalLines * lineH + 20;
+                    let tipX = iconX - tipW - 8;
+                    let tipY = iconY - tipH - 8;
+                    if (tipX < 4) tipX = 4;
+                    if (tipY < 4) tipY = 4;
+
+                    this.ctx.save();
+                    this.ctx.fillStyle = 'rgba(14,14,22,0.96)';
+                    this.ctx.beginPath();
+                    this.ctx.roundRect(tipX, tipY, tipW, tipH, 8);
+                    this.ctx.fill();
+                    this.ctx.strokeStyle = '#506080';
+                    this.ctx.lineWidth = 1.5;
+                    this.ctx.stroke();
+
+                    // Title
+                    this.ctx.fillStyle = '#9af0ff';
+                    this.ctx.font = 'bold 13px Arial';
+                    this.ctx.textAlign = 'left';
+                    this.ctx.textBaseline = 'top';
+                    let yy = tipY + 8;
+                    for (let u of UPDATES) {
+                        this.ctx.fillStyle = '#f6d87a';
+                        this.ctx.font = 'bold 12px Arial';
+                        this.ctx.fillText(u.ver, tipX + 10, yy);
+                        yy += lineH;
+                        this.ctx.fillStyle = '#ccc';
+                        this.ctx.font = '11px Arial';
+                        for (let item of u.items) {
+                            this.ctx.fillText('• ' + item, tipX + 28, yy);
+                            yy += lineH;
+                        }
+                    }
+                    this.ctx.restore();
+                }
             }
 
             // ================= TUTORIAL =================
