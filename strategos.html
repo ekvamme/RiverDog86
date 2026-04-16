@@ -1709,7 +1709,6 @@
                     if (!u.plannedAtk) continue;
                     let focusTile = this.getFocusTile(u);
                     if (!focusTile) continue;
-                    if (!STATS[u.type].firebolt && u.type !== 'Mage' && u.type !== 'Archmage') continue;
                     if (u.type !== 'Adept' && u.type !== 'Mage' && u.type !== 'Archmage') continue;
                     let k = focusTile.r + ',' + focusTile.c;
                     if (!arcingTiles.has(k)) arcingTiles.set(k, []);
@@ -2613,7 +2612,7 @@
                 if (STATS[u.type].rng === 1) {
                     let atks = this.getValidAttacks(u, u.plannedR, u.plannedC);
                     for (let {r, c, dir} of atks) {
-                        let t = this.getUnitAt(r, c);
+                        let t = this.getPlannedUnitAt(r, c);
                         if (t && t.player === 1) {
                             let isCharge = this.isChargeMove(u, u.r, u.c, u.plannedR, u.plannedC);
                             u.plannedAtk = {r, c, damageType: null, isCharge, direction: dir};
@@ -2665,7 +2664,7 @@
                     let atks = this.getValidAttacks(u, u.plannedR, u.plannedC);
                     let bestAtk = null, bestPriority = -999;
                     for (let {r, c, dir} of atks) {
-                        let t = this.getUnitAt(r, c);
+                        let t = this.getPlannedUnitAt(r, c);
                         if (t && t.player === 1) {
                             let priority = 0;
                             if (focusTarget && t === focusTarget) priority += 100;
@@ -2836,15 +2835,6 @@
                     this.ctx.fillRect(cx - sw / 3, sy + 10, (sw * 2) / 3, sh - 16);
                 }
 
-                // Team-colored halo behind the head/top of sprite so the
-                // player can see team color even when zoomed out or when
-                // units are clustered together. A small, subtle glow.
-                this.ctx.save();
-                this.ctx.globalCompositeOperation = 'source-atop';
-                this.ctx.fillStyle = teamAccent;
-                this.ctx.globalAlpha = 0.0; // placeholder — we don't actually tint the sprite, it hurts readability
-                this.ctx.globalAlpha = 1;
-                this.ctx.restore();
                 // Upper team-color chevron — a tiny colored pennant above the
                 // unit's head that always renders on top of the sprite.
                 let pennantY = sy + 4;
@@ -2960,24 +2950,23 @@
                     let bxB = tipX - ux * barbA - perpX * barbB;
                     let byB = tipY - uy * barbA - perpY * barbB;
                     let arrowColor = u.player === 1 ? '#3a78ff' : '#ff5050';
+                    let traceArrow = () => {
+                        this.ctx.moveTo(tailX, tailY);
+                        this.ctx.lineTo(tipX, tipY);
+                        this.ctx.moveTo(bxA, byA);
+                        this.ctx.lineTo(tipX, tipY);
+                        this.ctx.lineTo(bxB, byB);
+                    };
                     this.ctx.strokeStyle = '#000';
                     this.ctx.lineWidth = 2.5;
                     this.ctx.lineCap = 'round';
                     this.ctx.beginPath();
-                    this.ctx.moveTo(tailX, tailY);
-                    this.ctx.lineTo(tipX, tipY);
-                    this.ctx.moveTo(bxA, byA);
-                    this.ctx.lineTo(tipX, tipY);
-                    this.ctx.lineTo(bxB, byB);
+                    traceArrow();
                     this.ctx.stroke();
                     this.ctx.strokeStyle = arrowColor;
                     this.ctx.lineWidth = 1.5;
                     this.ctx.beginPath();
-                    this.ctx.moveTo(tailX, tailY);
-                    this.ctx.lineTo(tipX, tipY);
-                    this.ctx.moveTo(bxA, byA);
-                    this.ctx.lineTo(tipX, tipY);
-                    this.ctx.lineTo(bxB, byB);
+                    traceArrow();
                     this.ctx.stroke();
                 }
 
@@ -3303,7 +3292,7 @@
                         let tgt;
                         if (u.plannedAtk.targetR != null) {
                             tgt = this.isoCenter(u.plannedAtk.targetR, u.plannedAtk.targetC);
-                        } else if (u.plannedAtk.r != null && (u.plannedAtk.r || u.plannedAtk.c)) {
+                        } else if (u.plannedAtk.r != null && u.plannedAtk.c != null) {
                             tgt = this.isoCenter(u.plannedAtk.r, u.plannedAtk.c);
                         } else if (u.plannedAtk.direction) {
                             let [ddr, ddc] = u.plannedAtk.direction;

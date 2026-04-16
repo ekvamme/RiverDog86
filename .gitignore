@@ -3,6 +3,5 @@ game.py
 game_ai.py
 game_ai_vs_ai.py
 
-# Node/AI test harness
-ai_vs_ai.js
+# Node
 node_modules/
