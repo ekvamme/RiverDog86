@@ -7058,7 +7058,7 @@
                     } else if (game.planStep === 'TRAP') {
                         this.ctx.fillStyle = '#e08040';
                         this.ctx.font = 'bold 13px Arial';
-                        this.ctx.fillText('Click any tile to place your trap (Rogue keeps no attack this turn)', 14, UI_TOP + 115);
+                        this.ctx.fillText('Click a tile within 2 squares to place your trap (no attack this turn)', 14, UI_TOP + 115);
                         this.drawButton(game, 'plan_cancel_ability', 14, UI_TOP + 130, 220, 36, '← Back to Attack', {color: '#5a5a8a'});
                         this.drawButton(game, 'plan_deselect', 250, UI_TOP + 130, 140, 36, '✕ Deselect', {color: '#7a3a3a'});
                     } else if (game.planStep === 'BEACON') {
@@ -7312,6 +7312,29 @@
                                 this.ctx.fill();
                                 this.ctx.strokeStyle = 'rgba(120,180,255,0.85)';
                                 this.ctx.lineWidth = 2;
+                                this.ctx.stroke();
+                            }
+                        }
+                    } else if (game.planStep === 'TRAP') {
+                        // Highlight tiles within Chebyshev 2 of the Rogue's planned position.
+                        let su = game.selectedUnit;
+                        let baseR = su.plannedR != null ? su.plannedR : su.r;
+                        let baseC = su.plannedC != null ? su.plannedC : su.c;
+                        for (let r = 0; r < ROWS; r++) {
+                            for (let c = 0; c < COLS; c++) {
+                                let dist = Math.max(Math.abs(r - baseR), Math.abs(c - baseC));
+                                if (dist === 0 || dist > 2) continue;
+                                let [hx, hy] = this.isoCenter(r, c);
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx, hy - ISO_TH / 2);
+                                this.ctx.lineTo(hx + ISO_TW / 2, hy);
+                                this.ctx.lineTo(hx, hy + ISO_TH / 2);
+                                this.ctx.lineTo(hx - ISO_TW / 2, hy);
+                                this.ctx.closePath();
+                                this.ctx.fillStyle = 'rgba(224,128,64,0.18)';
+                                this.ctx.fill();
+                                this.ctx.strokeStyle = 'rgba(224,128,64,0.7)';
+                                this.ctx.lineWidth = 1;
                                 this.ctx.stroke();
                             }
                         }
@@ -8557,9 +8580,12 @@
                             game.planStep = null;
                         }
                     } else if (game.planStep === 'TRAP' && game.selectedUnit) {
-                        // Place trap on any in-bounds tile (Rogue/Assassin)
+                        // Place trap within 2 tiles of planned position (Rogue/Assassin)
                         let su = game.selectedUnit;
-                        if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+                        let fromR = su.plannedR != null ? su.plannedR : su.r;
+                        let fromC = su.plannedC != null ? su.plannedC : su.c;
+                        let dist = Math.max(Math.abs(r - fromR), Math.abs(c - fromC));
+                        if (r >= 0 && r < ROWS && c >= 0 && c < COLS && dist <= 2) {
                             su.plannedTrap = {r, c};
                             su.plannedAtk = null;
                             su.ordered = true;
