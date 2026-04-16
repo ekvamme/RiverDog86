@@ -2264,7 +2264,15 @@
                 } else if (this.phase === 'PLAN_P1') {
                     this.selectedUnit = null;
                     this.planStep = null;
-                    for (let u of this.p1Units) u.ordered = false;
+                    for (let u of this.p1Units) {
+                        u.ordered = false;
+                        u.plannedR = null; u.plannedC = null;
+                        u.plannedAtk = null; u.plannedTrap = null;
+                        u.plannedBeacon = null; u.plannedAid = null;
+                        u.plannedStealth = false; u.plannedShadow = null;
+                        u.plannedChannel = false; u.plannedRain = null;
+                        u.plannedBlink = null;
+                    }
                 } else if (this.phase === 'PLAN_P2') {
                     if (this.gameMode === 'AI' || this.gameMode === 'Campaign') {
                         this.aiPlan();
@@ -2272,7 +2280,15 @@
                     } else {
                         this.selectedUnit = null;
                         this.planStep = null;
-                        for (let u of this.p2Units) u.ordered = false;
+                        for (let u of this.p2Units) {
+                            u.ordered = false;
+                            u.plannedR = null; u.plannedC = null;
+                            u.plannedAtk = null; u.plannedTrap = null;
+                            u.plannedBeacon = null; u.plannedAid = null;
+                            u.plannedStealth = false; u.plannedShadow = null;
+                            u.plannedChannel = false; u.plannedRain = null;
+                            u.plannedBlink = null;
+                        }
                     }
                 } else if (this.phase === 'ACTION_RESOLVE') {
                     this.resolveAction();
