@@ -1488,22 +1488,37 @@
                 //    PASSED through its tile (the mid-tile of a 2-square charge).
                 //    Full Explosive damage on the trigger tile, half on the 8
                 //    surrounding tiles. Trap owner is immune to their own trap.
-                // Build a per-trap-tile set of triggering units (units that ENDED
-                // on the tile or PASSED through it via a completed charge).
-                let triggersByTile = {}; // "r,c" -> Set(units)
+                // Pre-pass: any charger whose mid-tile has a trap gets stopped
+                // there — the explosion "knocks them over" mid-charge. Their
+                // position is relocated to the mid-tile before we build the
+                // trigger map, so they take full trigger damage (not splash).
+                let trapTiles = new Set(this.traps.map(tr => `${tr.r},${tr.c}`));
                 for (let u of [...this.p1Units, ...this.p2Units]) {
-                    let endKey = `${u.r},${u.c}`;
-                    if (!triggersByTile[endKey]) triggersByTile[endKey] = new Set();
-                    triggersByTile[endKey].add(u);
                     let orig = origPos.get(u);
                     if (!orig) continue;
                     let dR = u.r - orig.r, dC = u.c - orig.c;
                     let isCharge = (Math.abs(dR) === 2 && dC === 0) || (dR === 0 && Math.abs(dC) === 2);
-                    if (isCharge) {
-                        let midKey = `${orig.r + dR / 2},${orig.c + dC / 2}`;
-                        if (!triggersByTile[midKey]) triggersByTile[midKey] = new Set();
-                        triggersByTile[midKey].add(u);
+                    if (!isCharge) continue;
+                    let midR = orig.r + dR / 2, midC = orig.c + dC / 2;
+                    if (trapTiles.has(`${midR},${midC}`)) {
+                        // Stop the charger on the trap tile
+                        u.r = midR; u.c = midC;
+                        // Cancel their attack — they're stunned by the blast
+                        u.plannedAtk = null;
+                        if (this.combatLog) {
+                            let pName = u.player === 1 ? 'P1' : 'P2';
+                            this.combatLog.push(`${pName} ${u.type} charge halted by trap at (${midR},${midC})`);
+                        }
                     }
+                }
+
+                // Build a per-trap-tile set of triggering units (units that ENDED
+                // on the tile — chargers stopped mid-charge are now positioned there).
+                let triggersByTile = {};
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    let endKey = `${u.r},${u.c}`;
+                    if (!triggersByTile[endKey]) triggersByTile[endKey] = new Set();
+                    triggersByTile[endKey].add(u);
                 }
                 let detonations = [];
                 let stillLive = [];
