@@ -73,6 +73,17 @@
         const MAX_ROSTER = 10;
         const P1_COLOR = '#2644af', P2_COLOR = '#af2626';
 
+        // ===== UI TEXT PALETTE =====
+        // Named colors for the main Canvas UI text. These are only used on
+        // ctx.fillStyle inside Renderer drawing methods — NOT inside SVG
+        // sprite template strings, whose colors live in the sprite literals
+        // further down (e.g. the '#1a0e06' outlines on every unit).
+        // Change these to re-theme the UI without touching sprite art.
+        const UI_TEXT       = '#eeeeee'; // primary body text
+        const UI_TEXT_MUTED = '#b2aca4'; // secondary / captions
+        const UI_TEXT_WHITE = '#ffffff'; // headings on colored bars
+        const UI_TEXT_DIM   = '#cccccc'; // subtle hints / placeholders
+
         // ===== UNIT STATS =====
         // tileTarget: true means the unit picks a tile within Chebyshev radius `rng`
         // and at resolve time strikes whatever enemy is planned to be on that tile.
@@ -702,6 +713,19 @@
                 let s = (n) => n > 0 ? 1 : n < 0 ? -1 : 0;
                 return [s(dr), s(dc)];
             }
+
+            // Remove dead units from both team rosters. Called after any
+            // resolve step that can reduce HP (squeeze, trample, ranged fire,
+            // traps, cleave, archmage rain, end-of-turn culling).
+            cullDeadUnits() {
+                this.p1Units = this.p1Units.filter(u => u.hp > 0);
+                this.p2Units = this.p2Units.filter(u => u.hp > 0);
+            }
+
+            // Canonical string key for a grid tile. Used by AI planners to
+            // track which tiles friendlies have already claimed as
+            // destinations, preventing unit stacking during plan.
+            tileKey(r, c) { return `${r},${c}`; }
 
             hit(att, tgt, halved, damageType, multiplier, flatBonus, logTag) {
                 // Use the attacker's primary damage type code
@@ -1444,8 +1468,7 @@
                 }
 
                 // Remove dead from squeeze
-                this.p1Units = this.p1Units.filter(u => u.hp > 0);
-                this.p2Units = this.p2Units.filter(u => u.hp > 0);
+                this.cullDeadUnits();
 
                 // ===== TRAMPLE DAMAGE =====
                 // A Knight/Paladin that completed a 2-square charge deals
@@ -1468,8 +1491,7 @@
                     // Half Melee (cleave-equivalent) with full defense + aura applied.
                     this.hit(u, t, true, 'Me', 1, 0, 'Trample');
                 }
-                this.p1Units = this.p1Units.filter(u => u.hp > 0);
-                this.p2Units = this.p2Units.filter(u => u.hp > 0);
+                this.cullDeadUnits();
 
                 // Check for wipe from squeeze / trample
                 if (this.p1Units.length === 0 || this.p2Units.length === 0) {
@@ -1494,8 +1516,7 @@
                         }
                     }
                 }
-                this.p1Units = this.p1Units.filter(u => u.hp > 0);
-                this.p2Units = this.p2Units.filter(u => u.hp > 0);
+                this.cullDeadUnits();
 
                 // ===== TRAP RESOLUTION =====
                 // 1) Promote any newly-planned traps to live board traps.
@@ -1649,8 +1670,7 @@
                             !(t2.player === trap.player && t2.r === trap.r && t2.c === trap.c));
                     }
                 }
-                this.p1Units = this.p1Units.filter(u => u.hp > 0);
-                this.p2Units = this.p2Units.filter(u => u.hp > 0);
+                this.cullDeadUnits();
 
                 // ===== LEND AID RESOLUTION =====
                 // Knight/Paladin heal an adjacent friendly +2 HP (capped at maxHp)
@@ -1710,8 +1730,7 @@
                         u.stealthed = false;
                     }
                 }
-                this.p1Units = this.p1Units.filter(u => u.hp > 0);
-                this.p2Units = this.p2Units.filter(u => u.hp > 0);
+                this.cullDeadUnits();
 
                 // ===== ARCHMAGE 3-TURN CYCLE RESOLUTION =====
                 // Channel → (next turn) Rain Fire → (next turn) Blink → idle
@@ -1795,8 +1814,7 @@
                         u.plannedAtk = null;
                     }
                 }
-                this.p1Units = this.p1Units.filter(u => u.hp > 0);
-                this.p2Units = this.p2Units.filter(u => u.hp > 0);
+                this.cullDeadUnits();
 
                 // Capture attack animation intents now that movement has resolved.
                 // Only survivors of the collision phase get to execute attacks.
@@ -2115,8 +2133,7 @@
                     }
                 }
 
-                this.p1Units = this.p1Units.filter(u => u.hp > 0);
-                this.p2Units = this.p2Units.filter(u => u.hp > 0);
+                this.cullDeadUnits();
                 this.turn++;
 
                 // "The Culling": starting on turn cullingTurn (default 10, host-configurable
@@ -2135,8 +2152,7 @@
                             this.combatLog.push(`${tName} ${u.type} [Attrition]: ${attrition} dmg (25% of ${u.hp + attrition} remaining HP)`);
                         }
                     }
-                    this.p1Units = this.p1Units.filter(u => u.hp > 0);
-                    this.p2Units = this.p2Units.filter(u => u.hp > 0);
+                    this.cullDeadUnits();
                 }
 
                 // Beacon Mark upkeep: any beacon whose owner died is removed.
@@ -2311,19 +2327,10 @@
                 if (winner !== 1) return null; // only score P1 wins
                 let survivors = this.p1Units.length;
                 let totalHp = this.p1Units.reduce((s, u) => s + u.hp, 0);
-                let spent = this.p1Units.reduce((s, u) => s + INVESTED[u.type], 0);
-                // Count unspent from the original budget. Dead units still count
-                // as spent (you bought them, they just died).
-                let allP1Invested = spent; // survivors
-                // We don't track dead P1 units, so estimate from budget
-                // Actually, we know the budget and what's left alive. The dead
-                // units were also purchased. Best proxy: budget was fully spent
-                // at shop time (common), so unspent = 0 in most cases.
-                // But if the player intentionally left tokens unspent, we should
-                // reward that. Track it properly:
-                let tokensSpent = 0;
-                // p1Units only has survivors. We need original roster cost.
-                // Store it at shop confirm time instead. For now, use budget.
+                // Unspent tokens = budget - what P1 actually spent in the shop.
+                // `_p1ShopSpent` is captured at shop-confirm time (search for
+                // the assignment below), so dead units still count as spent.
+                // If it's missing (e.g. legacy save), fall back to 0 unspent.
                 let unspentTokens = Math.max(0, this.budget - (this._p1ShopSpent || this.budget));
                 let turnsUsed = this.turn;
                 let maxTurns = this.cullingTurn + 10; // generous cap
@@ -2672,107 +2679,123 @@
 
             // ===== AI SHOP =====
             aiShop() {
+                if (this.difficulty === 'Easy') this.aiShopEasy();
+                else if (this.difficulty === 'Medium') this.aiShopMedium();
+                else this.aiShopHard();
+            }
+
+            // Spend any budget left over on random L1 units, up to MAX_ROSTER.
+            // Shared by all three aiShop difficulties as the "fill remaining".
+            aiShopFillL1(budget) {
+                while (budget >= 1 && this.p2Units.length < MAX_ROSTER) {
+                    let t = L1_UNITS[Math.floor(Math.random() * L1_UNITS.length)];
+                    this.p2Units.push(new Unit(2, t));
+                    budget -= 1;
+                }
+                return budget;
+            }
+
+            // Buy one random affordable comp, return leftover budget. If no
+            // comp fits, returns the original budget unchanged. Shared by
+            // aiShopMedium and aiShopHard.
+            aiShopBuyComp(comps, budget) {
+                let affordable = comps.filter(c => c.reduce((s, t) => s + INVESTED[t], 0) <= budget);
+                if (affordable.length === 0) return budget;
+                let comp = affordable[Math.floor(Math.random() * affordable.length)];
+                for (let t of comp) {
+                    this.p2Units.push(new Unit(2, t));
+                    budget -= INVESTED[t];
+                }
+                return budget;
+            }
+
+            aiShopEasy() {
+                // Random L1 units, spend whole budget
                 this.p2Units = [];
                 let budget = this.budget;
-                if (this.difficulty === 'Easy') {
-                    // Random L1 units
-                    while (budget >= 1) {
-                        let t = L1_UNITS[Math.floor(Math.random() * L1_UNITS.length)];
-                        this.p2Units.push(new Unit(2, t));
-                        budget -= 1;
-                    }
-                } else if (this.difficulty === 'Medium') {
-                    // Pre-built mixed compositions
-                    let comps = [
-                        ['Knight', 'Rogue', 'Mage'],
-                        ['Knight', 'Archer', 'Archer', 'Adept'],
-                        ['Mage', 'Rogue', 'Squire', 'Squire'],
-                        ['Knight', 'Knight', 'Adept'],
-                        ['Rogue', 'Mage', 'Squire', 'Archer'],
-                    ];
-                    let affordable = comps.filter(c => c.reduce((s,t) => s + INVESTED[t], 0) <= budget);
-                    if (affordable.length > 0) {
-                        let comp = affordable[Math.floor(Math.random() * affordable.length)];
-                        for (let t of comp) {
-                            this.p2Units.push(new Unit(2, t));
-                            budget -= INVESTED[t];
-                        }
-                    }
-                    // Fill remaining with L1
-                    while (budget >= 1 && this.p2Units.length < MAX_ROSTER) {
-                        let t = L1_UNITS[Math.floor(Math.random() * L1_UNITS.length)];
-                        this.p2Units.push(new Unit(2, t));
-                        budget -= 1;
-                    }
-                } else {
-                    // Hard: synergy compositions at various budget levels.
-                    // Each is [cost, units]. AI picks a random affordable one
-                    // then fills remaining budget with L1 units.
-                    let comps = [
-                        // 3-token comps (budget 3+)
-                        ['Knight'],
-                        ['Rogue'],
-                        ['Mage'],
-                        // 4-token comps (budget 4+)
-                        ['Knight', 'Archer'],
-                        ['Knight', 'Adept'],
-                        ['Rogue', 'Squire'],
-                        ['Mage', 'Adept'],
-                        // 5-token comps (budget 5+)
-                        ['Knight', 'Archer', 'Adept'],
-                        ['Knight', 'Squire', 'Squire'],
-                        ['Rogue', 'Mage'],
-                        // 6-token comps (budget 6+)
-                        ['Knight', 'Knight'],
-                        ['Knight', 'Rogue'],
-                        ['Knight', 'Mage'],
-                        ['Paladin'],
-                        ['Assassin'],
-                        ['Archmage'],
-                        // 7-token comps (budget 7+)
-                        ['Paladin', 'Adept'],
-                        ['Knight', 'Rogue', 'Adept'],
-                        ['Knight', 'Mage', 'Archer'],
-                        ['Assassin', 'Squire'],
-                        ['Archmage', 'Adept'],
-                        // 8-token comps (budget 8+)
-                        ['Knight', 'Knight', 'Squire', 'Squire'],
-                        ['Paladin', 'Archer', 'Adept'],
-                        ['Knight', 'Rogue', 'Mage'],
-                        ['Assassin', 'Squire', 'Adept'],
-                        ['Archmage', 'Squire', 'Adept'],
-                        // 9-token comps (budget 9+)
-                        ['Paladin', 'Mage'],
-                        ['Paladin', 'Rogue'],
-                        ['Assassin', 'Knight', 'Adept'],
-                        ['Archmage', 'Knight', 'Squire'],
-                        // 10+ token comps
-                        ['Paladin', 'Rogue', 'Archer'],
-                        ['Paladin', 'Knight', 'Adept'],
-                        ['Assassin', 'Knight', 'Rogue'],
-                        // 12-token comp
-                        ['Paladin', 'Archmage'],
-                    ];
-                    // Filter to affordable
-                    let affordable = comps.filter(c => c.reduce((s,t) => s + INVESTED[t], 0) <= this.budget);
-                    if (affordable.length > 0) {
-                        let comp = affordable[Math.floor(Math.random() * affordable.length)];
-                        for (let t of comp) {
-                            this.p2Units.push(new Unit(2, t));
-                            budget -= INVESTED[t];
-                        }
-                    }
-                    // Fill remaining budget with L1 units
-                    while (budget >= 1 && this.p2Units.length < MAX_ROSTER) {
-                        let t = L1_UNITS[Math.floor(Math.random() * L1_UNITS.length)];
-                        this.p2Units.push(new Unit(2, t));
-                        budget -= 1;
-                    }
+                while (budget >= 1) {
+                    let t = L1_UNITS[Math.floor(Math.random() * L1_UNITS.length)];
+                    this.p2Units.push(new Unit(2, t));
+                    budget -= 1;
                 }
+            }
+
+            aiShopMedium() {
+                // Pre-built mixed compositions, fill remaining with L1
+                this.p2Units = [];
+                let comps = [
+                    ['Knight', 'Rogue', 'Mage'],
+                    ['Knight', 'Archer', 'Archer', 'Adept'],
+                    ['Mage', 'Rogue', 'Squire', 'Squire'],
+                    ['Knight', 'Knight', 'Adept'],
+                    ['Rogue', 'Mage', 'Squire', 'Archer'],
+                ];
+                let budget = this.aiShopBuyComp(comps, this.budget);
+                this.aiShopFillL1(budget);
+            }
+
+            aiShopHard() {
+                // Synergy compositions at various budget levels. Pick one
+                // affordable comp at random, then fill remaining budget with L1s.
+                this.p2Units = [];
+                let comps = [
+                    // 3-token comps (budget 3+)
+                    ['Knight'],
+                    ['Rogue'],
+                    ['Mage'],
+                    // 4-token comps (budget 4+)
+                    ['Knight', 'Archer'],
+                    ['Knight', 'Adept'],
+                    ['Rogue', 'Squire'],
+                    ['Mage', 'Adept'],
+                    // 5-token comps (budget 5+)
+                    ['Knight', 'Archer', 'Adept'],
+                    ['Knight', 'Squire', 'Squire'],
+                    ['Rogue', 'Mage'],
+                    // 6-token comps (budget 6+)
+                    ['Knight', 'Knight'],
+                    ['Knight', 'Rogue'],
+                    ['Knight', 'Mage'],
+                    ['Paladin'],
+                    ['Assassin'],
+                    ['Archmage'],
+                    // 7-token comps (budget 7+)
+                    ['Paladin', 'Adept'],
+                    ['Knight', 'Rogue', 'Adept'],
+                    ['Knight', 'Mage', 'Archer'],
+                    ['Assassin', 'Squire'],
+                    ['Archmage', 'Adept'],
+                    // 8-token comps (budget 8+)
+                    ['Knight', 'Knight', 'Squire', 'Squire'],
+                    ['Paladin', 'Archer', 'Adept'],
+                    ['Knight', 'Rogue', 'Mage'],
+                    ['Assassin', 'Squire', 'Adept'],
+                    ['Archmage', 'Squire', 'Adept'],
+                    // 9-token comps (budget 9+)
+                    ['Paladin', 'Mage'],
+                    ['Paladin', 'Rogue'],
+                    ['Assassin', 'Knight', 'Adept'],
+                    ['Archmage', 'Knight', 'Squire'],
+                    // 10+ token comps
+                    ['Paladin', 'Rogue', 'Archer'],
+                    ['Paladin', 'Knight', 'Adept'],
+                    ['Assassin', 'Knight', 'Rogue'],
+                    // 12-token comp
+                    ['Paladin', 'Archmage'],
+                ];
+                let budget = this.aiShopBuyComp(comps, this.budget);
+                this.aiShopFillL1(budget);
             }
 
             // ===== AI PLACE =====
             aiPlace() {
+                if (this.difficulty === 'Easy') this.aiPlaceEasy();
+                else if (this.difficulty === 'Medium') this.aiPlaceMedium();
+                else this.aiPlaceHard();
+            }
+
+            // Collect all empty tiles in P2's placement zone.
+            aiPlaceGetEmptyTiles() {
                 let zone = P2_ZONE;
                 let positions = [];
                 for (let r = zone[0]; r <= zone[1]; r++) {
@@ -2780,35 +2803,52 @@
                         if (!this.getUnitAt(r, c)) positions.push([r, c]);
                     }
                 }
-                if (this.difficulty === 'Easy') {
-                    // Random placement
-                    for (let i = positions.length - 1; i > 0; i--) {
-                        let j = Math.floor(Math.random() * (i + 1));
-                        [positions[i], positions[j]] = [positions[j], positions[i]];
-                    }
-                } else if (this.difficulty === 'Hard') {
-                    // Melee in front row (4), ranged/magic in back row (5)
-                    let front = positions.filter(([r]) => r === zone[0]);
-                    let back = positions.filter(([r]) => r === zone[1]);
-                    let melee = this.p2Units.filter(u => STATS[u.type].rng === 1);
-                    let ranged = this.p2Units.filter(u => STATS[u.type].rng > 1);
-                    for (let u of melee) {
-                        let pos = front.length > 0 ? front.shift() : (back.length > 0 ? back.shift() : positions.shift());
-                        if (pos) { u.r = pos[0]; u.c = pos[1]; }
-                    }
-                    for (let u of ranged) {
-                        let pos = back.length > 0 ? back.shift() : (front.length > 0 ? front.shift() : positions.shift());
-                        if (pos) { u.r = pos[0]; u.c = pos[1]; }
-                    }
-                    return;
+                return positions;
+            }
+
+            aiPlaceEasy() {
+                // Random placement: shuffle, then assign in roster order
+                let positions = this.aiPlaceGetEmptyTiles();
+                for (let i = positions.length - 1; i > 0; i--) {
+                    let j = Math.floor(Math.random() * (i + 1));
+                    [positions[i], positions[j]] = [positions[j], positions[i]];
                 }
-                // Easy/Medium: sequential or shuffled
                 for (let u of this.p2Units) {
                     if (positions.length > 0) {
                         let pos = positions.shift();
                         u.r = pos[0];
                         u.c = pos[1];
                     }
+                }
+            }
+
+            aiPlaceMedium() {
+                // Sequential placement in reading order (no shuffle)
+                let positions = this.aiPlaceGetEmptyTiles();
+                for (let u of this.p2Units) {
+                    if (positions.length > 0) {
+                        let pos = positions.shift();
+                        u.r = pos[0];
+                        u.c = pos[1];
+                    }
+                }
+            }
+
+            aiPlaceHard() {
+                // Melee in front row, ranged/magic in back row
+                let positions = this.aiPlaceGetEmptyTiles();
+                let zone = P2_ZONE;
+                let front = positions.filter(([r]) => r === zone[0]);
+                let back = positions.filter(([r]) => r === zone[1]);
+                let melee = this.p2Units.filter(u => STATS[u.type].rng === 1);
+                let ranged = this.p2Units.filter(u => STATS[u.type].rng > 1);
+                for (let u of melee) {
+                    let pos = front.length > 0 ? front.shift() : (back.length > 0 ? back.shift() : positions.shift());
+                    if (pos) { u.r = pos[0]; u.c = pos[1]; }
+                }
+                for (let u of ranged) {
+                    let pos = back.length > 0 ? back.shift() : (front.length > 0 ? front.shift() : positions.shift());
+                    if (pos) { u.r = pos[0]; u.c = pos[1]; }
                 }
             }
 
@@ -2825,7 +2865,7 @@
                 for (let u of this.p2Units) {
                     let moves = this.getValidMoves(u);
                     // Filter out tiles claimed by a friendly
-                    let safe = moves.filter(([r,c]) => !claimed.has(`${r},${c}`));
+                    let safe = moves.filter(([r,c]) => !claimed.has(this.tileKey(r, c)));
                     if (safe.length > 0) {
                         let m = safe[Math.floor(Math.random() * safe.length)];
                         u.plannedR = m[0]; u.plannedC = m[1];
@@ -2835,7 +2875,7 @@
                     } else {
                         u.plannedR = u.r; u.plannedC = u.c;
                     }
-                    claimed.add(`${u.plannedR},${u.plannedC}`);
+                    claimed.add(this.tileKey(u.plannedR, u.plannedC));
                     this.aiAssignAttack(u);
                     u.ordered = true;
                 }
@@ -2850,7 +2890,7 @@
                     let minDist = 999;
                     for (let [mr, mc] of moves) {
                         let minD = 999;
-                        if (claimed.has(`${mr},${mc}`)) continue; // skip friendly-claimed tiles
+                        if (claimed.has(this.tileKey(mr, mc))) continue; // skip friendly-claimed tiles
                         for (let e of this.p1Units) {
                             let d = Math.max(Math.abs(e.r - mr), Math.abs(e.c - mc));
                             minD = Math.min(minD, d);
@@ -2858,7 +2898,7 @@
                         if (minD < minDist) { minDist = minD; bestMove = [mr, mc]; }
                     }
                     u.plannedR = bestMove[0]; u.plannedC = bestMove[1];
-                    claimed.add(`${bestMove[0]},${bestMove[1]}`);
+                    claimed.add(this.tileKey(bestMove[0], bestMove[1]));
                     this.aiAssignAttack(u);
                     u.ordered = true;
                 }
@@ -2886,7 +2926,7 @@
                         for (let [mr, mc] of moves) {
                             let score = 0;
                             // Heavy penalty for stacking on a friendly's planned tile
-                            if (friendlyClaimed.has(`${mr},${mc}`)) score -= 200;
+                            if (friendlyClaimed.has(this.tileKey(mr, mc))) score -= 200;
                             if (focusTarget) {
                                 let d = Math.abs(focusTarget.r - mr) + Math.abs(focusTarget.c - mc);
                                 score -= d * 10;
@@ -2910,7 +2950,7 @@
                         for (let [mr, mc] of moves) {
                             let score = 0;
                             // Heavy penalty for stacking on a friendly's planned tile
-                            if (friendlyClaimed.has(`${mr},${mc}`)) score -= 200;
+                            if (friendlyClaimed.has(this.tileKey(mr, mc))) score -= 200;
                             let minEnemyCheb = 999;
                             for (let e of this.p1Units) {
                                 let d = Math.max(Math.abs(e.r - mr), Math.abs(e.c - mc));
@@ -2938,7 +2978,7 @@
                         }
                     }
                     u.plannedR = bestMove[0]; u.plannedC = bestMove[1];
-                    friendlyClaimed.add(`${bestMove[0]},${bestMove[1]}`);
+                    friendlyClaimed.add(this.tileKey(bestMove[0], bestMove[1]));
 
                     // Hard AI: prioritize focus target for attack direction
                     this.aiAssignAttackHard(u, focusTarget);
@@ -4109,7 +4149,7 @@
                                 this.ctx.lineWidth = 1;
                                 this.ctx.stroke();
                                 // Unit type label
-                                this.ctx.fillStyle = '#fff';
+                                this.ctx.fillStyle = UI_TEXT_WHITE;
                                 this.ctx.font = 'bold 9px Arial';
                                 this.ctx.textAlign = 'center';
                                 this.ctx.textBaseline = 'middle';
@@ -4572,7 +4612,7 @@
                 this.ctx.lineWidth = 1;
                 this.ctx.strokeRect(0, UI_TOP, CANVAS_W, h);
 
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 18px Arial';
                 this.ctx.textAlign = 'center';
 
@@ -4631,7 +4671,7 @@
                             // Color-code by player
                             if (line.startsWith('P1')) this.ctx.fillStyle = '#7aa8ff';
                             else if (line.startsWith('P2')) this.ctx.fillStyle = '#ff8888';
-                            else this.ctx.fillStyle = '#b2aca4';
+                            else this.ctx.fillStyle = UI_TEXT_MUTED;
                             this.ctx.fillText(line, 10, logY + i * lineH);
                         }
                         if (log.length > maxLines) {
@@ -4644,7 +4684,7 @@
                         }
                     } else {
                         // ANIMATING: show progress bar
-                        this.ctx.fillStyle = '#eeeeee';
+                        this.ctx.fillStyle = UI_TEXT;
                         this.ctx.font = 'bold 22px Arial';
                         this.ctx.textAlign = 'center';
                         this.ctx.fillText('⚔  Battle resolving...  ⚔', CANVAS_W / 2, UI_TOP + 60);
@@ -4667,7 +4707,7 @@
             }
 
             drawMenu(game) {
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 24px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('SELECT GAME MODE', CANVAS_W / 2, UI_TOP + 50);
@@ -4679,7 +4719,7 @@
                 this.drawButton(game, 'mode_remote', cx - 180, UI_TOP + 224, 360, 40, 'Remote PvP (Online)', {color: '#3a8a9a', font: 'bold 18px Arial'});
                 this.drawButton(game, 'mode_tutorial', cx - 180, UI_TOP + 272, 360, 40, 'Tutorial', {color: '#3a7a4a', font: 'bold 18px Arial'});
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '12px Arial';
                 this.ctx.fillText('Keyboard shortcuts: 1 / 2 / 3 / 4 / 5', CANVAS_W / 2, UI_TOP + 336);
 
@@ -4779,7 +4819,7 @@
                         this.ctx.font = 'bold 12px Arial';
                         this.ctx.fillText(u.ver, tipX + 10, yy);
                         yy += lineH;
-                        this.ctx.fillStyle = '#ccc';
+                        this.ctx.fillStyle = UI_TEXT_DIM;
                         this.ctx.font = '11px Arial';
                         for (let item of u.items) {
                             this.ctx.fillText('• ' + item, tipX + 28, yy);
@@ -4792,11 +4832,11 @@
 
             drawNameEntry(game) {
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Enter Your Name', cx, UI_TOP + 50);
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '14px Arial';
                 this.ctx.fillText('For the leaderboard — 16 characters max', cx, UI_TOP + 75);
                 // Input box
@@ -4810,7 +4850,7 @@
                 // Typed text with blinking cursor
                 let typed = game.nameInput || '';
                 let cursor = Math.floor(performance.now() / 500) % 2 === 0 ? '|' : '';
-                this.ctx.fillStyle = '#ffffff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText(typed + cursor, cx, boxY + 32);
@@ -4833,7 +4873,7 @@
                 // Top banner
                 this.ctx.fillStyle = '#2a2e38';
                 this.ctx.fillRect(0, 0, CANVAS_W, 62);
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('STRATEGOS — TUTORIAL', CANVAS_W / 2, 38);
@@ -4876,7 +4916,7 @@
                     step < 11 ? 'Next →' : 'Done',
                     { color: step < 11 ? '#3a7a4a' : '#9a7a3a' });
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '12px Arial';
                 this.ctx.textAlign = 'center';
                 let hint = step === 11
@@ -4944,7 +4984,7 @@
                     y += 14;
                 }
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = 'italic 13px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Next: contested spaces, then a tour of all nine units.', cx, CANVAS_H - 110);
@@ -5134,7 +5174,7 @@
                     this.ctx.lineWidth = 1.4;
                     this.ctx.stroke();
                     // Name
-                    this.ctx.fillStyle = '#fff';
+                    this.ctx.fillStyle = UI_TEXT_WHITE;
                     this.ctx.font = 'bold 12px Arial';
                     this.ctx.textAlign = 'center';
                     this.ctx.fillText(name, x, y + 4);
@@ -5161,7 +5201,7 @@
                 }
 
                 // Scenario explanation, beneath the panel
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = '14px Arial';
                 this.ctx.textAlign = 'center';
                 let explY = panelY + panelH + 24;
@@ -5182,7 +5222,7 @@
                 this.ctx.font = 'bold 13px Arial';
                 this.ctx.textAlign = 'left';
                 this.ctx.fillText('⚖  TIEBREAK ORDER', panelX + 14, ruleY + 20);
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 14px Arial';
                 let keywords = [
                     { word: 'MOMENTUM', color: '#f6d87a', note: 'charging unit wins (2-tile move in a straight line)' },
@@ -5262,7 +5302,7 @@
                 this.ctx.textBaseline = 'alphabetic';
 
                 // Name
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 17px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText(amp.name, tagX + tagW / 2, tagY + tagH / 2 + 5);
@@ -5303,7 +5343,7 @@
                 this.ctx.font = 'bold 12px Arial';
                 this.ctx.textAlign = 'left';
                 this.ctx.fillText('UNITS INVOLVED', infoX + 16, iy); iy += 20;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = '14px Arial';
                 let whoLines = this.wrapTutorialText(amp.who, infoW - 32);
                 for (let l of whoLines) { this.ctx.fillText(l, infoX + 16, iy); iy += 18; }
@@ -5313,7 +5353,7 @@
                 this.ctx.fillStyle = '#9ac4ff';
                 this.ctx.font = 'bold 12px Arial';
                 this.ctx.fillText('TRIGGER', infoX + 16, iy); iy += 20;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = '14px Arial';
                 let trigLines = this.wrapTutorialText(amp.trigger, infoW - 32);
                 for (let l of trigLines) { this.ctx.fillText(l, infoX + 16, iy); iy += 18; }
@@ -5326,13 +5366,13 @@
                 this.ctx.fillStyle = '#ffb070';
                 this.ctx.font = 'bold 16px Arial';
                 this.ctx.fillText(amp.effectShort, infoX + 16, iy); iy += 22;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = '13px Arial';
                 let effLines = this.wrapTutorialText(amp.effectLong, infoW - 32);
                 for (let l of effLines) { this.ctx.fillText(l, infoX + 16, iy); iy += 17; }
 
                 // Hint footer
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = 'italic 12px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Amplifier badges appear above your units in-game when their trigger conditions are met.',
@@ -5526,7 +5566,7 @@
                     Rogue: 'R', Mage: 'M'
                 };
                 let glyph = labelMap[type] || type[0];
-                this.ctx.fillStyle = '#fff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 let fsize = glyph.length >= 2 ? Math.round(cell * 0.22) : Math.round(cell * 0.28);
                 this.ctx.font = `bold ${fsize}px Arial`;
                 this.ctx.textAlign = 'center';
@@ -5603,7 +5643,7 @@
 
             // Caption under the grid.
             drawAmpCaption(boxX, boxY, boxW, boxH, text) {
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = '13px Arial';
                 this.ctx.textAlign = 'center';
                 let cx = boxX + boxW / 2;
@@ -7073,7 +7113,7 @@
                     else if (t < 7000) label = '⑤ Attack!';
                     else label = '…';
                 }
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '13px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText(label, boxX + boxW / 2, boxY + boxH - 12);
@@ -7081,7 +7121,7 @@
 
             drawTutorialCursor(x, y) {
                 // Classic arrow cursor pointing up-left
-                this.ctx.fillStyle = '#ffffff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 this.ctx.strokeStyle = '#000000';
                 this.ctx.lineWidth = 1.5;
                 this.ctx.beginPath();
@@ -7139,10 +7179,10 @@
                     ['Type', s.atk_type]
                 ];
                 for (let [k, v] of core) {
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.font = '13px Arial';
                     this.ctx.fillText(k, boxX + 16, y);
-                    this.ctx.fillStyle = '#eeeeee';
+                    this.ctx.fillStyle = UI_TEXT;
                     this.ctx.font = 'bold 13px Arial';
                     this.ctx.textAlign = 'right';
                     this.ctx.fillText(String(v), boxX + boxW - 16, y);
@@ -7182,11 +7222,11 @@
                     this.ctx.strokeStyle = accent;
                     this.ctx.lineWidth = 1;
                     this.ctx.strokeRect(cx + 2, y, cw - 4, ch);
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.font = 'bold 10px Arial';
                     this.ctx.textAlign = 'center';
                     this.ctx.fillText(labels[i], cx + cw / 2, y + 14);
-                    this.ctx.fillStyle = '#eeeeee';
+                    this.ctx.fillStyle = UI_TEXT;
                     this.ctx.font = 'bold 19px Arial';
                     this.ctx.fillText(String(data[keys[i]]), cx + cw / 2, y + 38);
                 }
@@ -7395,7 +7435,7 @@
                 for (let i = 0; i < n.abilities.length; i++) {
                     let a = n.abilities[i];
                     // Ability name (left)
-                    this.ctx.fillStyle = '#eeeeee';
+                    this.ctx.fillStyle = UI_TEXT;
                     this.ctx.font = `bold ${nameFontPx}px Arial`;
                     this.ctx.textAlign = 'left';
                     this.ctx.fillText('▸  ' + a.name, boxX + 18, y);
@@ -7456,7 +7496,7 @@
 
             drawBudget(game) {
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 20px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Starting Budget', cx, UI_TOP + 40);
@@ -7471,11 +7511,11 @@
                 this.drawButton(game, 'budget_plus', cx + 70, UI_TOP + 100, 60, 36, '+', {font: 'bold 24px Arial', enabled: game.budget < 12});
 
                 // ----- The Culling -----
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 18px Arial';
                 this.ctx.fillText('The Culling', cx, UI_TOP + 165);
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '12px Arial';
                 this.ctx.fillText('Turn when all units begin bleeding (−25% max HP / turn)', cx, UI_TOP + 183);
 
@@ -7488,7 +7528,7 @@
 
                 // Difficulty (AI / Campaign)
                 if (game.gameMode === 'AI' || game.gameMode === 'Campaign') {
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.font = '14px Arial';
                     this.ctx.fillText(`AI Difficulty: ${game.difficulty}`, cx, UI_TOP + 285);
                     this.drawButton(game, 'diff_easy', cx - 180, UI_TOP + 300, 110, 32, 'Easy',
@@ -7509,27 +7549,35 @@
                 let units = game.phase === 'SHOP_P1' ? game.p1Units : game.p2Units;
                 let spent = units.reduce((a, u) => a + INVESTED[u.type], 0);
                 let left = game.budget - spent;
-                let color = p === 1 ? P1_COLOR : P2_COLOR;
 
-                // Header with campaign info
+                this.drawShopHeader(game, p, left);
+                this.drawShopBuyCards(game, units, left);
+                this.drawShopRoster(game, units, left);
+                this.drawShopFooterButtons(game, units);
+            }
+
+            drawShopHeader(game, p, left) {
+                let color = p === 1 ? P1_COLOR : P2_COLOR;
+                // Campaign info (optional top line)
                 this.ctx.textAlign = 'left';
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 if (game.gameMode === 'Campaign') {
                     this.ctx.font = '12px Arial';
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.fillText(`Campaign Match ${game.campaignMatch} — Score: You ${game.campaignScore[0]} - ${game.campaignScore[1]} AI`, 10, UI_TOP + 18);
                 }
-
                 // Big header bar
                 this.ctx.fillStyle = color;
                 this.ctx.fillRect(0, UI_TOP + 25, CANVAS_W, 34);
-                this.ctx.fillStyle = '#fff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 this.ctx.font = 'bold 16px Arial';
                 this.ctx.textAlign = 'left';
                 this.ctx.fillText(`Player ${p} — Shop`, 14, UI_TOP + 48);
                 this.ctx.textAlign = 'right';
                 this.ctx.fillText(`Tokens: ${left} / ${game.budget}`, CANVAS_W - 14, UI_TOP + 48);
+            }
 
+            drawShopBuyCards(game, units, left) {
                 // L1 unit buy cards (3 across)
                 let cardY = UI_TOP + 68;
                 let cardH = 70;
@@ -7542,9 +7590,11 @@
                     let canBuy = left >= 1 && units.length < MAX_ROSTER;
                     this.drawUnitCard(game, `buy_${t}`, x, cardY, cardW, cardH, t, canBuy, 'buy');
                 }
+            }
 
+            drawShopRoster(game, units, left) {
                 // Roster header
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 13px Arial';
                 this.ctx.textAlign = 'left';
                 this.ctx.fillText(`Your Roster (${units.length})`, 14, UI_TOP + 150);
@@ -7559,9 +7609,10 @@
                     let y = rosterY + i * rowH;
                     this.drawRosterRow(game, i, u, y, rowH - 3, left);
                 }
+            }
 
-                // Bottom: clear and confirm buttons
-                btnY = CANVAS_H - 50;
+            drawShopFooterButtons(game, units) {
+                let btnY = CANVAS_H - 50;
                 this.drawButton(game, 'shop_clear', 14, btnY, 140, 36, 'Clear Roster', {color: '#7a3a3a'});
                 let canConfirm = units.length > 0;
                 this.drawButton(game, 'shop_confirm', CANVAS_W - 240, btnY, 226, 36,
@@ -7637,14 +7688,14 @@
 
                 // Name + invested (vertically centered)
                 let compact = h < 36;
-                this.ctx.fillStyle = '#ffffff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 this.ctx.font = compact ? 'bold 12px Arial' : 'bold 14px Arial';
                 this.ctx.textAlign = 'left';
                 if (compact) {
                     this.ctx.fillText(`${unit.type}  (${INVESTED[unit.type]}t · HP ${s.hp})`, x + 14, y + h / 2 + 4);
                 } else {
                     this.ctx.fillText(`${unit.type}`, x + 14, y + h * 0.38);
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.font = '11px Arial';
                     this.ctx.fillText(`${INVESTED[unit.type]}t invested · HP ${s.hp}`, x + 14, y + h * 0.72);
                 }
@@ -7671,12 +7722,12 @@
             // side, shows the code), and enter-code (guest side).
             drawRemoteSetup(game) {
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Remote PvP — Online', cx, UI_TOP + 40);
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '13px Arial';
                 this.ctx.fillText('One player hosts, the other joins using the 6-character code.', cx, UI_TOP + 68);
                 this.ctx.fillText('Both players must have the page open.', cx, UI_TOP + 86);
@@ -7694,12 +7745,12 @@
 
             drawRemoteHostWait(game) {
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Hosting — waiting for opponent', cx, UI_TOP + 40);
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '13px Arial';
                 this.ctx.fillText('Give this code to the other player:', cx, UI_TOP + 75);
 
@@ -7714,7 +7765,7 @@
                 this.ctx.font = 'bold 28px monospace';
                 this.ctx.fillText(code, cx, UI_TOP + 136);
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '12px Arial';
                 this.ctx.fillText('(Share via chat / message)', cx, UI_TOP + 175);
 
@@ -7729,12 +7780,12 @@
 
             drawRemoteJoin(game) {
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Join — enter host code', cx, UI_TOP + 40);
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '13px Arial';
                 this.ctx.fillText('Type the 6-character code from the host.', cx, UI_TOP + 75);
                 this.ctx.fillText('Press ENTER to connect, BACKSPACE to edit.', cx, UI_TOP + 93);
@@ -7767,14 +7818,14 @@
             // took a second longer to register) without re-typing.
             drawRemoteJoinFailed(game) {
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Could not connect', cx, UI_TOP + 40);
 
                 // Show what code they tried so they can sanity-check it.
                 let code = (game.joinCode || '').toUpperCase();
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '13px Arial';
                 this.ctx.fillText('Tried to join code:', cx, UI_TOP + 75);
                 this.ctx.fillStyle = '#ffb070';
@@ -7814,12 +7865,12 @@
                 // knows their orders went through, similar to Planning header.
                 this.ctx.fillStyle = '#3a4a6a';
                 this.ctx.fillRect(0, UI_TOP + 10, CANVAS_W, 34);
-                this.ctx.fillStyle = '#fff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 this.ctx.font = 'bold 16px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Orders locked in — Waiting for opponent', cx, UI_TOP + 33);
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '14px Arial';
                 this.ctx.fillText('Your plans are shown on the board. Sit tight while they finish their orders.', cx, UI_TOP + 76);
 
@@ -7838,7 +7889,7 @@
                 this.ctx.fillStyle = '#0d1018';
                 this.ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
                 let cx = CANVAS_W / 2, cy = CANVAS_H / 2;
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Battle begins in...', cx, cy - 120);
@@ -7881,11 +7932,11 @@
                 this.ctx.fillStyle = 'rgba(16, 18, 26, 0.92)';
                 this.ctx.fillRect(0, UI_TOP, CANVAS_W, CANVAS_H - UI_TOP);
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Opponent\'s Turn', cx, UI_TOP + 80);
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '15px Arial';
                 this.ctx.fillText(label, cx, UI_TOP + 115);
                 // Animated dots
@@ -7911,16 +7962,16 @@
 
                 this.ctx.fillStyle = color;
                 this.ctx.fillRect(0, UI_TOP + 10, CANVAS_W, 34);
-                this.ctx.fillStyle = '#fff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 this.ctx.font = 'bold 16px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText(`Player ${p} — Review the Board`, cx, UI_TOP + 33);
 
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = '15px Arial';
                 this.ctx.fillText('Both armies are now deployed.', cx, UI_TOP + 75);
 
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '13px Arial';
                 if (!waiting) {
                     this.ctx.fillText('Look over your opponent\'s setup, then hit Ready', cx, UI_TOP + 98);
@@ -7950,7 +8001,7 @@
 
             drawHandoff(game) {
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
                 // Which player is next?
@@ -7959,7 +8010,7 @@
                 else if (game.phase === 'HANDOFF_P') nextPlayer = 'Player 2 - Placement';
                 else if (game.phase === 'HANDOFF_PP') nextPlayer = 'Player 2 - Planning';
                 this.ctx.fillText('Pass the device', cx, UI_TOP + 60);
-                this.ctx.fillStyle = '#b2aca4';
+                this.ctx.fillStyle = UI_TEXT_MUTED;
                 this.ctx.font = '16px Arial';
                 this.ctx.fillText(`Next: ${nextPlayer}`, cx, UI_TOP + 95);
                 this.drawButton(game, 'handoff_continue', cx - 160, UI_TOP + 130, 320, 50, 'I\'m Ready - Continue →', {color: '#46a046', font: 'bold 16px Arial'});
@@ -7975,17 +8026,17 @@
                 // Header
                 this.ctx.fillStyle = color;
                 this.ctx.fillRect(0, UI_TOP + 10, CANVAS_W, 34);
-                this.ctx.fillStyle = '#fff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 this.ctx.font = 'bold 16px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText(`Player ${p} — Place Units`, CANVAS_W / 2, UI_TOP + 33);
 
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = '15px Arial';
                 this.ctx.textAlign = 'center';
                 if (next) {
                     this.ctx.fillText(`Next to place: ${next.type}  (${unplaced.length} left)`, CANVAS_W / 2, UI_TOP + 75);
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.font = '13px Arial';
                     this.ctx.fillText(`Click a cell in rows ${p === 1 ? P1_ZONE[0] + '-' + P1_ZONE[1] + ' (top)' : P2_ZONE[0] + '-' + P2_ZONE[1] + ' (bottom)'}`, CANVAS_W / 2, UI_TOP + 100);
                 } else {
@@ -8007,13 +8058,13 @@
                 // Header
                 this.ctx.fillStyle = color;
                 this.ctx.fillRect(0, UI_TOP + 10, CANVAS_W, 34);
-                this.ctx.fillStyle = '#fff';
+                this.ctx.fillStyle = UI_TEXT_WHITE;
                 this.ctx.font = 'bold 16px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText(`Player ${p} — Planning  (${ordered}/${units.length} ordered)`, CANVAS_W / 2, UI_TOP + 33);
 
                 this.ctx.textAlign = 'left';
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = '14px Arial';
 
                 if (game.selectedUnit) {
@@ -8021,7 +8072,7 @@
                     let s = STATS[u.type];
                     this.ctx.fillText(`Selected: ${u.type}`, 14, UI_TOP + 70);
                     this.ctx.font = '12px Arial';
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.fillText(`HP ${u.hp}/${u.maxHp} · Move ${s.mov} · Range ${s.rng}`, 14, UI_TOP + 90);
 
                     if (game.planStep === 'MOVE') {
@@ -8104,7 +8155,7 @@
                 // Unordered-unit quick-pick list
                 let unordered = units.filter(u => !u.ordered);
                 if (unordered.length > 0 && !game.selectedUnit) {
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.font = '11px Arial';
                     this.ctx.textAlign = 'left';
                     this.ctx.fillText(`Un-ordered (${unordered.length}):`, 14, UI_TOP + 115);
@@ -8133,7 +8184,7 @@
 
             drawReady(game) {
                 let cx = CANVAS_W / 2;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 20px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Both players ready!', cx, UI_TOP + 60);
@@ -8144,7 +8195,7 @@
                 let cx = CANVAS_W / 2;
                 let winner = game.p1Units.length > 0 ? 1 : (game.p2Units.length > 0 ? 2 : 0);
                 let sc = game.lastScore;
-                this.ctx.fillStyle = '#eeeeee';
+                this.ctx.fillStyle = UI_TEXT;
                 this.ctx.font = 'bold 22px Arial';
                 this.ctx.textAlign = 'center';
 
@@ -8152,7 +8203,7 @@
                 if (game.gameMode === 'Campaign') {
                     this.ctx.fillText(winner === 0 ? 'DRAW!' : `Player ${winner} wins match ${game.campaignMatch}!`, cx, UI_TOP + 28);
                     this.ctx.font = '14px Arial';
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     this.ctx.fillText(`Campaign: You ${game.campaignScore[0]} — ${game.campaignScore[1]} AI`, cx, UI_TOP + 48);
                 } else {
                     let title = winner === 0 ? 'DRAW!' : winner === 1 ? 'VICTORY!' : 'DEFEAT!';
@@ -8168,7 +8219,7 @@
                     this.ctx.fillText(`${sc.total} pts`, cx, yOff);
                     yOff += 22;
                     this.ctx.font = '11px Arial';
-                    this.ctx.fillStyle = '#b2aca4';
+                    this.ctx.fillStyle = UI_TEXT_MUTED;
                     let lines = [
                         `Base: ${sc.base}`,
                         `Speed: +${sc.speedBonus} (${sc.unusedTurns} unused turns × 50)`,
@@ -8650,7 +8701,7 @@
                             this.ctx.fillStyle = '#999';
                             this.ctx.font = '10px Arial';
                             this.ctx.fillText(a.unit, panX + 130, y);
-                            this.ctx.fillStyle = '#ccc';
+                            this.ctx.fillStyle = UI_TEXT_DIM;
                             this.ctx.fillText(a.desc, panX + 195, y);
                         }
                         this.ctx.restore();
@@ -8669,7 +8720,7 @@
                     this.ctx.font = 'bold 24px Arial';
                     this.ctx.textAlign = 'center';
                     this.ctx.fillText('Connection Lost', CANVAS_W / 2, CANVAS_H / 2 - 40);
-                    this.ctx.fillStyle = '#ccc';
+                    this.ctx.fillStyle = UI_TEXT_DIM;
                     this.ctx.font = '16px Arial';
                     this.ctx.fillText(`Reconnecting... (${remaining}s)`, CANVAS_W / 2, CANVAS_H / 2);
                     this.ctx.fillStyle = '#888';
@@ -8709,7 +8760,7 @@
                         this.ctx.textAlign = 'left';
                         this.ctx.textBaseline = 'top';
                         this.ctx.fillText(titleLine, tipX + 8, tipY + 5);
-                        this.ctx.fillStyle = '#ccc';
+                        this.ctx.fillStyle = UI_TEXT_DIM;
                         this.ctx.font = '11px Arial';
                         this.ctx.fillText(descLine, tipX + 8, tipY + 24);
                         this.ctx.restore();
