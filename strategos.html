@@ -631,18 +631,19 @@
                             if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
                                 let key = `${nr},${nc}`;
                                 if (visited.has(key)) continue;
-                                // Dest tile: allow charging to any tile, even if a
-                                // friendly is there (they may move away — simultaneous
-                                // planning). Collision resolution handles conflicts.
-                                // Mid-tile check: allow charging through friendlies
-                                // (they may move away this turn — simultaneous planning).
-                                // Block only if an enemy of equal or greater weight is
-                                // on the mid-tile (can't trample another heavy).
-                                let midR = r + dr / 2, midC = c + dc / 2;
-                                let mid = this.getUnitAt(midR, midC);
-                                if (mid && mid.player !== unit.player) {
-                                    if (STATS[mid.type].weight >= STATS[unit.type].weight) continue;
-                                }
+                                // Permissive planning: the destination tile AND the
+                                // mid-tile may contain friendlies OR enemies of any
+                                // weight. The charge may not actually succeed —
+                                // resolve-phase passes handle the outcome:
+                                //   - heavy (K/P) in the lane  → charge-defense
+                                //     bounces the charger back to origin
+                                //   - lighter enemy in the lane → trample pass
+                                //     deals half-melee + boots them aside
+                                //   - friendly in the lane      → simultaneous-
+                                //     planning collision rules decide
+                                // The planning UI should always OFFER the charge
+                                // tile so the player can declare it; success is a
+                                // resolve-time question.
                                 visited.add(key);
                                 moves.push([nr, nc]);
                             }
@@ -2537,6 +2538,15 @@
                     this.phase = 'REMOTE_PLACE_REVEAL';
                     this.selectedUnit = null;
                     this.planStep = null;
+                    // Commit any opponent placement that arrived early while
+                    // we were still drafting/placing (info-leak guard above
+                    // kept it buffered until now).
+                    if (this.remotePendingOppPlacement && this.remotePendingOppPlacement.length) {
+                        let opp = me === 1 ? 2 : 1;
+                        if (opp === 1) this.p1Units = this.remotePendingOppPlacement;
+                        else           this.p2Units = this.remotePendingOppPlacement;
+                        this.remotePendingOppPlacement = null;
+                    }
                     this.remoteSendPlacement();
                     return;
                 }
@@ -9810,8 +9820,17 @@
                 let opp = isHost ? 2 : 1;
                 let oppList = (msg.units || []).map(deserializeUnit);
                 console.log('[remote] got place_snapshot:', oppList.length, 'opponent units');
-                if (opp === 1) game.p1Units = oppList;
-                else           game.p2Units = oppList;
+                // INFO-LEAK GUARD: if we are still in our own shop/place
+                // phase, do NOT paint opponent pieces onto our board — stash
+                // them until we ourselves reach REMOTE_PLACE_REVEAL.
+                let myShopPhase = 'SHOP_P'  + (isHost ? 1 : 2);
+                let myPlacePhase = 'PLACE_P' + (isHost ? 1 : 2);
+                if (game.phase === myShopPhase || game.phase === myPlacePhase) {
+                    game.remotePendingOppPlacement = oppList;
+                } else {
+                    if (opp === 1) game.p1Units = oppList;
+                    else           game.p2Units = oppList;
+                }
                 if (game.remoteRole === 'host') game.remoteTryStartPlan();
                 return;
             }
@@ -9827,13 +9846,22 @@
                 if (msg.units && msg.units.length) {
                     let opp = isHost ? 2 : 1;
                     let oppList = msg.units.map(deserializeUnit);
-                    // Only overwrite if we didn't already have a roster
-                    // (the earlier snapshot is canonical). Guards against
-                    // clobbering units that moved/changed state.
-                    let existing = opp === 1 ? game.p1Units : game.p2Units;
-                    if (!existing || existing.length === 0) {
-                        if (opp === 1) game.p1Units = oppList;
-                        else           game.p2Units = oppList;
+                    let myShopPhase = 'SHOP_P'  + (isHost ? 1 : 2);
+                    let myPlacePhase = 'PLACE_P' + (isHost ? 1 : 2);
+                    let stillHidden = (game.phase === myShopPhase || game.phase === myPlacePhase);
+                    if (stillHidden) {
+                        // Still in our own draft/place — keep opponent pieces
+                        // buffered until we transition to the reveal screen.
+                        game.remotePendingOppPlacement = oppList;
+                    } else {
+                        // Only overwrite if we didn't already have a roster
+                        // (the earlier snapshot is canonical). Guards against
+                        // clobbering units that moved/changed state.
+                        let existing = opp === 1 ? game.p1Units : game.p2Units;
+                        if (!existing || existing.length === 0) {
+                            if (opp === 1) game.p1Units = oppList;
+                            else           game.p2Units = oppList;
+                        }
                     }
                 }
                 if (game.remoteRole === 'host') {
