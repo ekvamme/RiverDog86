@@ -8170,7 +8170,7 @@
                     } else if (game.planStep === 'AID') {
                         this.ctx.fillStyle = '#7adc7a';
                         this.ctx.font = 'bold 13px Arial';
-                        this.ctx.fillText('Click an adjacent friendly to lend aid (+2 HP)', 14, UI_TOP + 115);
+                        this.ctx.fillText('Click any adjacent tile — +2 HP to whoever ends up there', 14, UI_TOP + 115);
                         this.drawButton(game, 'plan_cancel_ability', 14, UI_TOP + 130, 220, 36, '← Back to Attack', {color: '#5a5a8a'});
                         this.drawButton(game, 'plan_deselect', 250, UI_TOP + 130, 140, 36, '✕ Deselect', {color: '#7a3a3a'});
                     }
@@ -8497,6 +8497,41 @@
                                 this.ctx.strokeStyle = 'rgba(224,128,64,0.7)';
                                 this.ctx.lineWidth = 1;
                                 this.ctx.stroke();
+                            }
+                        }
+                    } else if (game.planStep === 'AID') {
+                        // Show green highlights on the 8 tiles adjacent to the
+                        // K/P's planned position. Any tile is clickable — the
+                        // heal lands on whoever (if anyone) ends up there at
+                        // resolution. Empty and enemy-occupied tiles are valid
+                        // targets (enemy may move out, ally may move in).
+                        let su = game.selectedUnit;
+                        let baseR = su.plannedR != null ? su.plannedR : su.r;
+                        let baseC = su.plannedC != null ? su.plannedC : su.c;
+                        for (let dr = -1; dr <= 1; dr++) {
+                            for (let dc = -1; dc <= 1; dc++) {
+                                if (dr === 0 && dc === 0) continue;
+                                let nr = baseR + dr, nc = baseC + dc;
+                                if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+                                let [hx, hy] = this.isoCenter(nr, nc);
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx, hy - ISO_TH / 2);
+                                this.ctx.lineTo(hx + ISO_TW / 2, hy);
+                                this.ctx.lineTo(hx, hy + ISO_TH / 2);
+                                this.ctx.lineTo(hx - ISO_TW / 2, hy);
+                                this.ctx.closePath();
+                                this.ctx.fillStyle = 'rgba(120,220,120,0.24)';
+                                this.ctx.fill();
+                                this.ctx.strokeStyle = 'rgba(120,220,120,0.9)';
+                                this.ctx.lineWidth = 2;
+                                this.ctx.stroke();
+                                // "+" glyph so the intent is obvious
+                                this.ctx.fillStyle = 'rgba(200,255,200,0.95)';
+                                this.ctx.font = 'bold 16px Arial';
+                                this.ctx.textAlign = 'center';
+                                this.ctx.textBaseline = 'middle';
+                                this.ctx.fillText('✚', hx, hy);
+                                this.ctx.textBaseline = 'alphabetic';
                             }
                         }
                     } else if (game.planStep === 'STRIKE') {
@@ -9681,7 +9716,19 @@
                 plannedBeacon: u.plannedBeacon,
                 plannedShadow: u.plannedShadow, plannedAid: u.plannedAid,
                 plannedStealth: u.plannedStealth, plannedBlink: u.plannedBlink,
-                plannedChannel: u.plannedChannel
+                plannedChannel: u.plannedChannel,
+                // Persistent synergy / status state. MUST be on the wire —
+                // deserializing opponent units without these caused clients
+                // to disagree on Archer Accuracy multiplier, Adept Focused
+                // Channeling bonus, Squire Vanguard move, and Assassin stealth
+                // visibility. Divergence led to kills on one side that the
+                // other side undid at the next merge (units "resurrecting").
+                accuracyStack: u.accuracyStack,
+                lastTargetR: u.lastTargetR,
+                lastTargetC: u.lastTargetC,
+                focusChannelStack: u.focusChannelStack,
+                vanguardMov: u.vanguardMov,
+                stealthed: u.stealthed
             };
         }
 
@@ -9704,6 +9751,15 @@
             u.plannedStealth = !!o.plannedStealth;
             u.plannedBlink = o.plannedBlink || null;
             u.plannedChannel = o.plannedChannel || null;
+            // Restore persistent synergy state. Fall back to the Unit
+            // constructor defaults if the sender is on an older build
+            // that didn't include these fields.
+            u.accuracyStack     = typeof o.accuracyStack === 'number'     ? o.accuracyStack     : 0;
+            u.lastTargetR       = o.lastTargetR != null                   ? o.lastTargetR       : null;
+            u.lastTargetC       = o.lastTargetC != null                   ? o.lastTargetC       : null;
+            u.focusChannelStack = typeof o.focusChannelStack === 'number' ? o.focusChannelStack : 0;
+            u.vanguardMov       = typeof o.vanguardMov === 'number'       ? o.vanguardMov       : 0;
+            u.stealthed         = !!o.stealthed;
             return u;
         }
 
@@ -10134,19 +10190,22 @@
                             game.planStep = null;
                         }
                     } else if (game.planStep === 'AID' && game.selectedUnit) {
-                        // Heal an adjacent friendly (relative to the move destination)
+                        // Pick any adjacent tile (relative to the move destination).
+                        // Simultaneous-turn semantics: target the TILE, not a
+                        // specific ally. At resolve time, whoever ends up on
+                        // that tile — an already-present friendly, an ally who
+                        // moves in, or no one — determines the heal. Empty &
+                        // enemy-occupied tiles at planning time are allowed
+                        // (enemy may move out, ally may move in).
                         let su = game.selectedUnit;
                         let dr = Math.abs(r - su.plannedR), dc = Math.abs(c - su.plannedC);
-                        if ((dr + dc) > 0 && dr <= 1 && dc <= 1) {
-                            // Adjacent (orthogonal or diagonal) tile
-                            let tgt = game.getUnitAt(r, c);
-                            if (tgt && tgt.player === su.player && tgt !== su) {
-                                su.plannedAid = {r, c};
-                                su.plannedAtk = null;
-                                su.ordered = true;
-                                game.selectedUnit = null;
-                                game.planStep = null;
-                            }
+                        if ((dr + dc) > 0 && dr <= 1 && dc <= 1
+                            && r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+                            su.plannedAid = {r, c};
+                            su.plannedAtk = null;
+                            su.ordered = true;
+                            game.selectedUnit = null;
+                            game.planStep = null;
                         }
                     } else if (game.planStep === 'ATTACK' && game.selectedUnit) {
                         let su = game.selectedUnit;
