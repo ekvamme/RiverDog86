@@ -68,6 +68,32 @@
     </script>
 
     <script>
+        // ============================================================================
+        // TABLE OF CONTENTS  (line numbers drift — grep a symbol if they look stale)
+        // ============================================================================
+        //     71   CONSTANTS & CONFIG             grid, iso dimensions, zones, stats
+        //     96   UNIT STATS                     STATS, UPGRADES, INVESTED tables
+        //    128   LEADERBOARD                    localStorage helpers
+        //    153   UNIT SPRITE SYSTEM             per-type SVG templates + Image cache
+        //    427   UNIT CLASS                     per-instance unit state (Unit)
+        //    466   GAME CLASS                     all game logic (Game)
+        //            563  logMatchHeader / captureTurnStart   combat log & turn snapshot
+        //            699  getValidMoves / getValidAttacks     movement + attack rules
+        //            859  hit                                 damage formula
+        //            953  computeSynergies                    Phalanx, High Ground, etc.
+        //           1186  resolveAction                       simultaneous-turn engine
+        //           2503  nextPhase / remoteNextPhase         phase state machine
+        //           2842  aiShop / aiPlace / aiPlan           AI (Easy/Medium/Hard)
+        //   3286   RENDERER CLASS                 all canvas drawing (Renderer)
+        //           3299  drawTile / drawUnit / drawBoard     grid + sprite rendering
+        //           3876  drawPlanPreview / drawActionAnim    plan + resolve animation
+        //           4744  drawUI                              top-bar + per-phase HUD
+        //           4870+ drawMenu / drawTutorial / drawBudget / drawShop / etc.
+        //   8984   MAIN GAME LOOP & INPUT         click routing, keyboard, RAF loop
+        //           9088  handleButtonClick                   button dispatch table
+        //   9526   REMOTE PVP NETWORKING          PeerJS/WebRTC concurrent play
+        // ============================================================================
+
         // ===== CONSTANTS & CONFIG =====
         const ROWS = 5, COLS = 5;
         const ISO_TW = 60, ISO_TH = 34, ISO_TD = 22;
@@ -437,6 +463,11 @@
                 this.plannedC = null;
                 this.plannedAtk = null;
                 this.plannedTrap = null;   // {r,c} for Rogue trap placement
+                this.plannedFire = null;   // [{r,c}, ...] Mage fire tiles (up to 2)
+                this.plannedDigIn = false; // Squire: commit to dig-in this turn (stationary-only)
+                this.dugInTurns = 0;       // Squire: turns remaining in dug-in state (2 → 1 → 0)
+                this.plannedAim = false;   // Archer: commit to aim this turn (stationary-only)
+                this.aiming = false;       // Archer: holds aim; consumed on next attack OR cleared on move
                 this.plannedBeacon = null; // {r,c} for Adept Beacon Mark
                 this.plannedAid = null;    // {r,c} for Knight/Paladin lend aid
                 this.plannedStealth = false; // Assassin: enter stealth this turn
@@ -490,6 +521,7 @@
                 this.campaignTotal = 7; // best of 7
                 this.animation = null; // movement/attack animation state during ACTION_RESOLVE
                 this.traps = []; // [{player, r, c, ownerId}] - placed by Rogues, persist on board
+                this.fires = []; // [{player, r, c, ownerId}] - placed by Mages; active for ONE turn then cleared
                 this.beacons = []; // [{player, ownerId, r, c}] — Adept Beacon Mark; persists while owner alive
                 // Match log (see resolveAction / drawGameOver). Also reset
                 // inside initBoard() so campaign match-to-match transitions
@@ -546,6 +578,7 @@
                 this.turn = 0;
                 this.animation = null;
                 this.traps = [];
+                this.fires = [];
                 this.beacons = [];
                 // Full-match text log for post-game review. Populated by
                 // captureTurnStart/logTurn/logMatchResult and copied to the
@@ -586,6 +619,7 @@
                     plannedR: u.plannedR, plannedC: u.plannedC,
                     plannedAtk: u.plannedAtk ? {...u.plannedAtk} : null,
                     plannedTrap: u.plannedTrap ? {...u.plannedTrap} : null,
+                    plannedFire: u.plannedFire ? u.plannedFire.map(f => ({...f})) : null,
                     plannedBeacon: u.plannedBeacon ? {...u.plannedBeacon} : null,
                     plannedAid: u.plannedAid ? {...u.plannedAid} : null,
                     plannedShadow: u.plannedShadow ? {...u.plannedShadow} : null,
@@ -619,6 +653,7 @@
                         else if (a.direction) parts.push(`atk-dir[${a.direction[0]},${a.direction[1]}]`);
                     }
                     if (u.plannedTrap)   parts.push(`trap→(${u.plannedTrap.r},${u.plannedTrap.c})`);
+                    if (u.plannedFire && u.plannedFire.length) parts.push(`fires→[${u.plannedFire.map(f=>`(${f.r},${f.c})`).join(',')}]`);
                     if (u.plannedBeacon) parts.push(`beacon→(${u.plannedBeacon.r},${u.plannedBeacon.c})`);
                     if (u.plannedAid)    parts.push(`aid→(${u.plannedAid.r},${u.plannedAid.c})`);
                     if (u.plannedShadow) parts.push(`shadow→(${u.plannedShadow.r},${u.plannedShadow.c})`);
@@ -874,6 +909,12 @@
                     && this._phalanxSet && this._phalanxSet.has(tgt)) {
                     phalanxDef = 2;
                 }
+                // Dig In: +2 Me defense for a Squire who has committed to
+                // the prepared defensive stance this turn or the one after.
+                let digInDef = 0;
+                if (tgt.type === 'Squire' && tgt.dugInTurns > 0 && damageType === 'Me') {
+                    digInDef = 2;
+                }
                 let rawAtk = STATS[att.type].atk[damageType];
                 // Dark Conclave: +3 Magic for Adepts in a triangle
                 let conclaveBonus = 0;
@@ -881,7 +922,7 @@
                     conclaveBonus = 3;
                 }
                 let rawDfn = STATS[tgt.type].dfn[damageType];
-                let totalDfn = rawDfn + aurBonus + lastStandDef + phalanxDef;
+                let totalDfn = rawDfn + aurBonus + lastStandDef + phalanxDef + digInDef;
                 let dmg = Math.max(1, (rawAtk + conclaveBonus) - totalDfn);
                 dmg = Math.floor(dmg * (multiplier || 1));
                 if (halved) dmg = Math.max(1, Math.floor(dmg / 2));
@@ -900,6 +941,7 @@
                     if (aurBonus) { mathParts.push(`- ${aurBonus} aura`); amps.push('Paladin Aura'); }
                     if (lastStandDef) { mathParts.push(`- ${lastStandDef} Last Stand`); amps.push('Last Stand'); }
                     if (phalanxDef) { mathParts.push(`- ${phalanxDef} Phalanx`); amps.push('Phalanx'); }
+                    if (digInDef) { mathParts.push(`- ${digInDef} Dig In`); amps.push('Dig In'); }
                     let baseStr = mathParts.join(' ');
                     let modParts = [];
                     if ((multiplier || 1) !== 1) { modParts.push(`×${multiplier}`); amps.push(multiplier === 2 ? 'Charge' : `×${multiplier} amp`); }
@@ -1190,6 +1232,29 @@
                 if (!this.matchLogStarted) this.logMatchHeader();
                 this.captureTurnStart();
 
+                // ===== PREP STATE PROMOTION =====
+                // Squires that planned Dig In enter a 2-turn dug-in state NOW
+                // (before collision) so their bump-immunity and +2 Me def are
+                // active during this turn's combat AND the next turn. Archers
+                // that planned Aim flip their aiming flag. Captured IDs feed
+                // the animation's prep-window aura bloom.
+                let newPrepIds = [];
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (u.plannedDigIn) {
+                        u.dugInTurns = 2;
+                        u.plannedDigIn = false;
+                        u._activeSynergies = [...(u._activeSynergies || []), 'Dig In'];
+                        if (u.id != null) newPrepIds.push(u.id);
+                    }
+                    if (u.plannedAim) {
+                        u.aiming = true;
+                        u.plannedAim = false;
+                        u._activeSynergies = [...(u._activeSynergies || []), 'Aim'];
+                        if (u.id != null) newPrepIds.push(u.id);
+                    }
+                }
+                this._pendingPrepIds = newPrepIds;
+
                 // --- COLLISION / WEIGHT SYSTEM ---
                 let allUnits = [...this.p1Units, ...this.p2Units];
                 // Save original positions
@@ -1326,11 +1391,31 @@
                         let eIsHeavy = (e.type === 'Knight' || e.type === 'Paladin');
                         let isStationary = (edR === 0 && edC === 0);
                         if (isStationary) {
+                            // A dug-in Squire is terrain — they halt any charge
+                            // that tries to pass through them OR end on their
+                            // tile. Charger bounces back; Squire holds ground.
+                            if (e.dugInTurns > 0) {
+                                let uOrig = origPos.get(u);
+                                u.plannedR = uOrig.r; u.plannedC = uOrig.c;
+                                bounced.add(u);
+                                break;
+                            }
                             // Stationary K/P in our charge path always contests
                             // (they're a wall — you can't ride over another heavy).
                             // Stationary lighter units are handled later by the
                             // trample / collision logic; skip here.
                             if (!eIsHeavy) continue;
+                            // A stationary heavy in the MID tile is a true wall:
+                            // the charger cannot ride through regardless of
+                            // weight or HP. Bounce the charger back to origin
+                            // — no charge, no trample. Dest-tile contests still
+                            // fall through to the normal weight/HP tiebreak.
+                            if (onMid) {
+                                let uOrig = origPos.get(u);
+                                u.plannedR = uOrig.r; u.plannedC = uOrig.c;
+                                bounced.add(u);
+                                break;
+                            }
                         } else {
                             let edRn = edR === 0 ? 0 : (edR > 0 ? 1 : -1);
                             let edCn = edC === 0 ? 0 : (edC > 0 ? 1 : -1);
@@ -1449,17 +1534,25 @@
                         if (!orig) return false;
                         return this.isChargeMove(u, orig.r, orig.c, u.plannedR, u.plannedC);
                     };
+                    // A dug-in Squire is bump-immune — they always win tile
+                    // contests over chargers and equal-weight walkers. This
+                    // reinforces the "becomes terrain" fantasy of Dig In.
                     units.sort((a, b) => {
+                        let da = a.dugInTurns > 0 ? 1 : 0;
+                        let db = b.dugInTurns > 0 ? 1 : 0;
+                        if (db !== da) return db - da; // dug-in wins first
                         let ca = isChargingInto(a) ? 1 : 0;
                         let cb = isChargingInto(b) ? 1 : 0;
-                        if (cb !== ca) return cb - ca; // chargers first
+                        if (cb !== ca) return cb - ca; // chargers next
                         let wa = STATS[a.type].weight, wb = STATS[b.type].weight;
                         if (wb !== wa) return wb - wa;
                         return b.hp - a.hp;
                     });
                     let winner = units[0];
-                    // Tie only if the same charge-status AND same weight AND same HP.
-                    let tied = (isChargingInto(units[0]) === isChargingInto(units[1])
+                    // Tie only if the same dug-in status AND charge-status AND
+                    // weight AND HP.
+                    let tied = ((units[0].dugInTurns > 0) === (units[1].dugInTurns > 0)
+                                && isChargingInto(units[0]) === isChargingInto(units[1])
                                 && STATS[units[0].type].weight === STATS[units[1].type].weight
                                 && units[0].hp === units[1].hp);
 
@@ -1807,6 +1900,95 @@
                 }
                 this.cullDeadUnits();
 
+                // ===== FIRE TERRAIN RESOLUTION =====
+                // Mages place up to 2 fire tiles that burn for two turns (the
+                // placement turn and the one after). Any unit whose final
+                // position lands on a fire tile takes Magic damage (8 base -
+                // target Ma defense). Chargers whose mid-tile passed through a
+                // fire take unmitigated damage — momentum carries them straight
+                // through the flames (matches trap semantics). Mage is immune
+                // to their own fire; allies are NOT (fire magic is indiscrim-
+                // inate, consistent with Adept firebolt friendly-fire).
+                //
+                // Order: promote newly-planned fires FIRST (so they damage the
+                // charger that just rode through them this turn), then apply
+                // damage, then decrement turnsLeft and remove expired fires.
+                // Also capture the freshly-lit tiles so the resolve animation
+                // can flare them up BEFORE movement plays back.
+                let newFireTiles = [];
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (!u.plannedFire || u.plannedFire.length === 0) continue;
+                    for (let {r, c} of u.plannedFire) {
+                        this.fires.push({player: u.player, r, c, ownerId: u, turnsLeft: 2});
+                        newFireTiles.push({r, c, player: u.player});
+                    }
+                    u.plannedFire = null;
+                    u._activeSynergies = [...(u._activeSynergies || []), 'Scorch Earth'];
+                }
+                this._pendingNewFires = newFireTiles;
+
+                // Break aim on any aiming archer who actually moved this turn.
+                // (Movement commit has already set u.r/u.c to final position, so
+                // we can compare against origPos.) Aim is preserved for archers
+                // that stayed put — they can hold the shot indefinitely until
+                // firing or moving.
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (u.type !== 'Archer' || !u.aiming) continue;
+                    let orig = origPos.get(u);
+                    if (!orig) continue;
+                    if (orig.r !== u.r || orig.c !== u.c) {
+                        u.aiming = false;
+                        u._activeSynergies = [...(u._activeSynergies || []), 'Aim Broken'];
+                    }
+                }
+                if (this.fires.length > 0) {
+                    // Charge-through pass: unmitigated damage for chargers whose
+                    // mid-tile has an active fire tile (any owner).
+                    for (let u of [...this.p1Units, ...this.p2Units]) {
+                        if (u.hp <= 0) continue;
+                        let orig = origPos.get(u);
+                        if (!orig) continue;
+                        let dR = u.r - orig.r, dC = u.c - orig.c;
+                        let isCharge = (Math.abs(dR) === 2 && dC === 0) || (dR === 0 && Math.abs(dC) === 2);
+                        if (!isCharge) continue;
+                        let midR = orig.r + dR / 2, midC = orig.c + dC / 2;
+                        for (let fire of this.fires) {
+                            if (fire.r !== midR || fire.c !== midC) continue;
+                            if (fire.ownerId === u) continue; // placing mage immune
+                            let dmg = 8; // unmitigated — charge through flames
+                            u.hp -= dmg;
+                            this.recordDamage(u, dmg, 'dmg', fire.ownerId, 'Ma');
+                            if (this.combatLog) {
+                                let pName = fire.player === 1 ? 'P1' : 'P2';
+                                let tName = u.player === 1 ? 'P1' : 'P2';
+                                this.combatLog.push(`${pName} Mage Fire → ${tName} ${u.type} [Fire charge]: ${dmg} dmg (8 magic, charge — no defense)`);
+                            }
+                        }
+                    }
+                    // Entry pass: any unit whose FINAL position sits on an active
+                    // fire tile takes mitigated magic damage. Includes units who
+                    // stood still, walked in, or were bumped into the fire.
+                    for (let u of [...this.p1Units, ...this.p2Units]) {
+                        if (u.hp <= 0) continue;
+                        for (let fire of this.fires) {
+                            if (fire.r !== u.r || fire.c !== u.c) continue;
+                            if (fire.ownerId === u) continue; // placing mage immune
+                            let dmg = Math.max(1, 8 - STATS[u.type].dfn.Ma);
+                            u.hp -= dmg;
+                            this.recordDamage(u, dmg, 'dmg', fire.ownerId, 'Ma');
+                            if (this.combatLog) {
+                                let pName = fire.player === 1 ? 'P1' : 'P2';
+                                let tName = u.player === 1 ? 'P1' : 'P2';
+                                this.combatLog.push(`${pName} Mage Fire → ${tName} ${u.type} [Fire]: ${dmg} dmg (8 magic - ${STATS[u.type].dfn.Ma} dfn(Ma))`);
+                            }
+                        }
+                    }
+                    this.cullDeadUnits();
+                }
+                // Age all active fires and remove any that have burned out.
+                for (let f of this.fires) f.turnsLeft -= 1;
+                this.fires = this.fires.filter(f => f.turnsLeft > 0);
+
                 // ===== LEND AID RESOLUTION =====
                 // Knight/Paladin heal an adjacent friendly +2 HP (capped at maxHp)
                 for (let u of [...this.p1Units, ...this.p2Units]) {
@@ -2131,6 +2313,14 @@
                             mul *= (1 + 0.5 * Math.min(u.accuracyStack, 3));
                         }
 
+                        // Aim (Archer): committed preparation turn gives the
+                        // next shot ×2 damage. Consumed on use — one-shot bonus.
+                        if (u.type === 'Archer' && u.aiming) {
+                            mul *= 2;
+                            u._aimConsumedThisTurn = true;
+                            u._activeSynergies = [...(u._activeSynergies || []), 'Aimed Shot'];
+                        }
+
                         // Beacon Mark: Archer firing a tile-targeted arrow at a
                         // friendly beacon tile deals 3× damage. Also sets the
                         // _beaconHit flag for the badge.
@@ -2336,6 +2526,24 @@
                     }
                 }
 
+                // Dig-in age: decrement dugInTurns; Squire leaves the stance when
+                // it hits 0. Dug-in state covers the placement turn AND the one
+                // after, so two full rounds of combat see the +2 Me def and
+                // bump-immunity before it lapses.
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (u.dugInTurns > 0) u.dugInTurns -= 1;
+                }
+                // Aim consumption: if the archer fired with aim this turn, clear
+                // the aiming flag. If they didn't fire but also didn't move, aim
+                // persists (already handled — we only set aiming=false on move
+                // or consumption, otherwise it stays across turns).
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (u.type === 'Archer' && u._aimConsumedThisTurn) {
+                        u.aiming = false;
+                        u._aimConsumedThisTurn = false;
+                    }
+                }
+
                 // Append this turn's block to the match log AFTER all state
                 // updates so survivors[] reflects the post-resolution board.
                 this.logTurn();
@@ -2409,16 +2617,21 @@
 
                 this.animation = {
                     startTime: performance.now(),
-                    // Bumped to 3000ms so the 2-second float-up has time to
-                    // complete after the attack window ends at ~1870ms.
-                    duration: 3000,
+                    // 3300ms: extra head room for the prep window (first 12%)
+                    // so the freshly-lit scorch tiles + dig-in/aim auras have
+                    // time to flare up before movement slides.
+                    duration: 3300,
                     moves,
                     attacks: animAttacks,
                     deadUnits,
                     damages,
+                    newFires: this._pendingNewFires || [],
+                    newPrepIds: this._pendingPrepIds || [],
                     combatLog: [...this.combatLog],
                     preActionSnapshot: this._preActionSnapshot || []
                 };
+                this._pendingNewFires = [];
+                this._pendingPrepIds = [];
 
                 // Populate the combat log div
                 let logDiv = document.getElementById('combatLog');
@@ -2526,10 +2739,18 @@
                         u.ordered = false;
                         u.plannedR = null; u.plannedC = null;
                         u.plannedAtk = null; u.plannedTrap = null;
+                        u.plannedFire = null;
+                        u.plannedDigIn = false; u.plannedAim = false;
                         u.plannedBeacon = null; u.plannedAid = null;
                         u.plannedStealth = false; u.plannedShadow = null;
                         u.plannedChannel = false; u.plannedRain = null;
                         u.plannedBlink = null;
+                        // Dug-in Squires are committed to their stance — lock
+                        // them in place, no attack, auto-ordered.
+                        if (u.dugInTurns > 0) {
+                            u.plannedR = u.r; u.plannedC = u.c;
+                            u.ordered = true;
+                        }
                     }
                     // In AI mode, skip straight to P2 AI planning then resolve
                     if (this.gameMode === 'AI' || this.gameMode === 'Campaign') {
@@ -2582,10 +2803,18 @@
                         u.ordered = false;
                         u.plannedR = null; u.plannedC = null;
                         u.plannedAtk = null; u.plannedTrap = null;
+                        u.plannedFire = null;
+                        u.plannedDigIn = false; u.plannedAim = false;
                         u.plannedBeacon = null; u.plannedAid = null;
                         u.plannedStealth = false; u.plannedShadow = null;
                         u.plannedChannel = false; u.plannedRain = null;
                         u.plannedBlink = null;
+                        // Dug-in Squires are committed to their stance — lock
+                        // them in place, no attack, auto-ordered.
+                        if (u.dugInTurns > 0) {
+                            u.plannedR = u.r; u.plannedC = u.c;
+                            u.ordered = true;
+                        }
                     }
                 } else if (this.phase === 'PLAN_P2') {
                     if (this.gameMode === 'AI' || this.gameMode === 'Campaign') {
@@ -2728,6 +2957,8 @@
                 let me = this.localPlayer;
                 let myUnits = me === 1 ? this.p1Units : this.p2Units;
                 let myTraps = this.traps.filter(t => t.player === me);
+                let myFires = this.fires.filter(f => f.player === me)
+                    .map(f => ({player: f.player, r: f.r, c: f.c, ownerIdRef: f.ownerId ? f.ownerId.id : null}));
                 let myBeacons = this.beacons.filter(b => b.player === me)
                     .map(b => ({player: b.player, r: b.r, c: b.c, ownerIdRef: b.ownerId ? b.ownerId.id : null}));
                 try {
@@ -2735,6 +2966,7 @@
                         t: 'ready',
                         units: myUnits.map(serializeUnit),
                         traps: myTraps.map(t => ({...t})),
+                        fires: myFires,
                         beacons: myBeacons
                     });
                 } catch (e) {
@@ -3199,6 +3431,38 @@
             }
 
             aiAssignAttackHard(u, focusTarget) {
+                // Mage-specific: consider Scorch Earth (fire tiles) on predicted
+                // enemy positions when 2+ enemies sit within Chebyshev 3. Only
+                // available when the Mage is staying in place this turn — Scorch
+                // Earth is a preparation decision that requires commitment.
+                // Fire deals 8-Ma per enemy on a tile AND denies their movement
+                // path next turn — strong vs clustered melee.
+                if (u.type === 'Mage' && u.plannedR === u.r && u.plannedC === u.c) {
+                    let rng = 3;
+                    let enemies = u.player === 1 ? this.p2Units : this.p1Units;
+                    let reachable = [];
+                    for (let e of enemies) {
+                        let p = this.predictEnemyTile(e);
+                        let dist = Math.max(Math.abs(p.r - u.plannedR), Math.abs(p.c - u.plannedC));
+                        if (dist > 0 && dist <= rng) reachable.push({e, r: p.r, c: p.c});
+                    }
+                    if (reachable.length >= 2) {
+                        // Score fire path: up to 2 tiles, each hitting one enemy.
+                        let picks = reachable.slice(0, 2);
+                        let fireDmg = picks.reduce((s, x) => s + Math.max(1, 8 - STATS[x.e.type].dfn.Ma), 0);
+                        // Best single firebolt hit for comparison
+                        let boltDmg = 0;
+                        for (let x of reachable) {
+                            let d = Math.max(1, 10 - STATS[x.e.type].dfn.Ma);
+                            if (d > boltDmg) boltDmg = d;
+                        }
+                        if (fireDmg > boltDmg + 2) {
+                            u.plannedFire = picks.map(x => ({r: x.r, c: x.c}));
+                            u.plannedAtk = null;
+                            return;
+                        }
+                    }
+                }
                 if (STATS[u.type].rng === 1) {
                     let atks = this.getValidAttacks(u, u.plannedR, u.plannedC);
                     let bestAtk = null, bestPriority = -999;
@@ -3633,6 +3897,9 @@
                     for (let u of myUnits) {
                         if (u.plannedTrap) this.drawTrap(u.plannedTrap.r, u.plannedTrap.c, true);
                         if (u.plannedBeacon) this.drawBeacon(u.plannedBeacon.r, u.plannedBeacon.c, true);
+                        if (u.plannedFire && u.plannedFire.length) {
+                            for (let f of u.plannedFire) this.drawFire(f.r, f.c, true);
+                        }
                     }
                 }
 
@@ -3754,6 +4021,81 @@
                 for (let trap of game.traps) {
                     if (trap._revealed && showRevealed && trap.player !== revealPlayer) {
                         this.drawTrap(trap.r, trap.c, false);
+                    }
+                }
+
+                // Active fire tiles — visible to BOTH players (fire can't hide).
+                // During ACTION_RESOLVE, freshly-lit scorch tiles (captured in
+                // animation.newFires) grow out of the ground during the prep
+                // window [0, 0.12] while pre-existing fires hold their full
+                // shape. Gives the player a beat to see what got scorched
+                // before movement resolves and chargers plow through.
+                let freshSet = null;
+                let prepPhase = 0;
+                if (game.animation && game.animation.newFires && game.animation.newFires.length) {
+                    let elapsed = performance.now() - game.animation.startTime;
+                    let t = Math.min(1, elapsed / game.animation.duration);
+                    let localT = Math.min(1, t / 0.12);
+                    if (localT < 1) {
+                        freshSet = new Set(game.animation.newFires.map(f => `${f.r},${f.c}`));
+                        prepPhase = localT;
+                    }
+                }
+                for (let fire of game.fires) {
+                    if (freshSet && freshSet.has(`${fire.r},${fire.c}`)) {
+                        // Ease-out growth + flash that blooms and fades
+                        let scale = Math.min(1, prepPhase * 1.3);
+                        scale = 1 - Math.pow(1 - scale, 2); // ease-out quad
+                        let flash = Math.sin(prepPhase * Math.PI); // 0..1..0
+                        this.drawFire(fire.r, fire.c, false, scale, flash);
+                    } else {
+                        this.drawFire(fire.r, fire.c, false);
+                    }
+                }
+
+                // Prep auras: dug-in Squires + aiming Archers. Visible to both
+                // players (the stance is the signal). During ACTION_RESOLVE's
+                // prep window, freshly-committed prep units pulse in with a
+                // growth-and-flash animation; otherwise the aura sits steady.
+                let freshPrepSet = null;
+                let prepPhaseAura = 0;
+                if (game.animation && game.animation.newPrepIds && game.animation.newPrepIds.length) {
+                    let elapsed2 = performance.now() - game.animation.startTime;
+                    let t2 = Math.min(1, elapsed2 / game.animation.duration);
+                    let localT2 = Math.min(1, t2 / 0.12);
+                    if (localT2 < 1) {
+                        freshPrepSet = new Set(game.animation.newPrepIds);
+                        prepPhaseAura = localT2;
+                    }
+                }
+                let prepScale = (unit) => {
+                    if (freshPrepSet && freshPrepSet.has(unit.id)) {
+                        let s = Math.min(1, prepPhaseAura * 1.3);
+                        return [1 - Math.pow(1 - s, 2), Math.sin(prepPhaseAura * Math.PI)];
+                    }
+                    return [1, 0];
+                };
+                let auraPhases = game.phase === 'ACTION_RESOLVE'
+                    || game.phase === 'PLAN_P1' || game.phase === 'PLAN_P2'
+                    || game.phase === 'READY_ACTION'
+                    || (game.phase === 'REMOTE_WAIT' && game.gameMode === 'Remote');
+                if (auraPhases) {
+                    for (let u of [...game.p1Units, ...game.p2Units]) {
+                        // During placement-reveal, don't leak opponent auras
+                        // (handled by hideOpponentForPlacement above — but
+                        // we're outside that phase here so just guard hp).
+                        if (u.hp <= 0) continue;
+                        let [sx, fx] = prepScale(u);
+                        if (u.type === 'Squire' && u.dugInTurns > 0) {
+                            let ar = u.r, ac = u.c;
+                            // During resolve animation the unit slides — anchor
+                            // aura to its starting tile (prep window freezes
+                            // units at origin anyway).
+                            this.drawDigInAura(ar, ac, sx, fx);
+                        }
+                        if (u.type === 'Archer' && u.aiming) {
+                            this.drawAimingAura(u.r, u.c, sx, fx);
+                        }
                     }
                 }
 
@@ -4063,18 +4405,190 @@
                 this.ctx.restore();
             }
 
+            // A flickering flame sitting on the tile. `isPreview` = planned
+            // placement (translucent). During the ACTION_RESOLVE prep window,
+            // freshly-lit scorch tiles pass scale 0→1 to grow from the ground;
+            // `flash` adds an extra ignition halo on top of the flame.
+            drawFire(r, c, isPreview, scale = 1, flash = 0) {
+                let [cx, cy] = this.isoCenter(r, c);
+                let now = performance.now();
+                // Per-tile flicker seed so adjacent flames don't sway in unison.
+                let seed = (r * 7 + c * 13);
+                let flick = 0.82 + 0.18 * Math.sin(now / 120 + seed);
+                let sway = Math.sin(now / 180 + seed) * 1.4;
+                this.ctx.save();
+                this.ctx.globalAlpha = isPreview ? 0.55 : 0.95;
+                // Ignition flash: bright white-orange halo that blooms then fades.
+                if (flash > 0.01) {
+                    let ringR = 20 + flash * 28;
+                    let flashGrad = this.ctx.createRadialGradient(cx, cy, 0, cx, cy, ringR);
+                    flashGrad.addColorStop(0, `rgba(255,240,170,${0.85 * flash})`);
+                    flashGrad.addColorStop(0.5, `rgba(255,160,60,${0.55 * flash})`);
+                    flashGrad.addColorStop(1, 'rgba(255,100,20,0)');
+                    this.ctx.fillStyle = flashGrad;
+                    this.ctx.fillRect(cx - ringR, cy - ringR, ringR * 2, ringR * 2);
+                }
+                // Scale flame body — used when fire grows out of the ground.
+                if (scale < 0.999) {
+                    this.ctx.translate(cx, cy + 2);
+                    this.ctx.scale(Math.max(0.05, scale), Math.max(0.05, scale));
+                    this.ctx.translate(-cx, -(cy + 2));
+                }
+                // Warm radial glow on the tile
+                let glow = this.ctx.createRadialGradient(cx, cy, 2, cx, cy, 24);
+                glow.addColorStop(0, `rgba(255,200,80,${0.55 * flick})`);
+                glow.addColorStop(0.5, `rgba(255,100,30,${0.35 * flick})`);
+                glow.addColorStop(1, 'rgba(180,40,10,0)');
+                this.ctx.fillStyle = glow;
+                this.ctx.fillRect(cx - 28, cy - 22, 56, 40);
+                // Embers (small dots around base)
+                this.ctx.fillStyle = `rgba(255,160,50,${0.85 * flick})`;
+                for (let i = 0; i < 4; i++) {
+                    let a = i * (Math.PI / 2) + seed * 0.2;
+                    let ex = cx + Math.cos(a) * 7;
+                    let ey = cy + Math.sin(a) * 4 + 3;
+                    this.ctx.beginPath();
+                    this.ctx.arc(ex, ey, 1.2, 0, Math.PI * 2);
+                    this.ctx.fill();
+                }
+                // Base (dark pool)
+                this.ctx.fillStyle = '#2a1404';
+                this.ctx.beginPath();
+                this.ctx.ellipse(cx, cy + 2, 11, 4, 0, 0, Math.PI * 2);
+                this.ctx.fill();
+                // Outer flame body — orange teardrop
+                this.ctx.fillStyle = '#ff6a1c';
+                this.ctx.beginPath();
+                this.ctx.moveTo(cx - 7 + sway * 0.5, cy + 1);
+                this.ctx.quadraticCurveTo(cx - 9 + sway, cy - 8, cx - 3 + sway, cy - 14);
+                this.ctx.quadraticCurveTo(cx + sway * 1.2, cy - 22 * flick, cx + 3 + sway, cy - 14);
+                this.ctx.quadraticCurveTo(cx + 9 + sway, cy - 8, cx + 7 + sway * 0.5, cy + 1);
+                this.ctx.closePath();
+                this.ctx.fill();
+                // Inner flame — yellow
+                this.ctx.fillStyle = '#ffc040';
+                this.ctx.beginPath();
+                this.ctx.moveTo(cx - 4 + sway * 0.4, cy - 1);
+                this.ctx.quadraticCurveTo(cx - 5 + sway, cy - 8, cx - 1 + sway, cy - 12);
+                this.ctx.quadraticCurveTo(cx + sway, cy - 18 * flick, cx + 2 + sway, cy - 11);
+                this.ctx.quadraticCurveTo(cx + 5 + sway, cy - 7, cx + 4 + sway * 0.4, cy - 1);
+                this.ctx.closePath();
+                this.ctx.fill();
+                // Hot core — white-yellow
+                this.ctx.fillStyle = `rgba(255,255,200,${0.9 * flick})`;
+                this.ctx.beginPath();
+                this.ctx.ellipse(cx + sway * 0.6, cy - 6, 1.8, 4, 0, 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.restore();
+            }
+
+            // Earthy "dug-in" aura under a Squire — heaped dirt + shield outline.
+            // scale: grows 0→1 during the prep window for freshly-dug squires.
+            // flash: 0..1..0 halo during ignition (only on the placement turn).
+            drawDigInAura(r, c, scale = 1, flash = 0) {
+                let [cx, cy] = this.isoCenter(r, c);
+                this.ctx.save();
+                // Outer halo during ignition
+                if (flash > 0.01) {
+                    let ringR = 22 + flash * 20;
+                    let grad = this.ctx.createRadialGradient(cx, cy, 0, cx, cy, ringR);
+                    grad.addColorStop(0, `rgba(200,160,80,${0.7 * flash})`);
+                    grad.addColorStop(1, 'rgba(120,70,20,0)');
+                    this.ctx.fillStyle = grad;
+                    this.ctx.fillRect(cx - ringR, cy - ringR, ringR * 2, ringR * 2);
+                }
+                let eff = Math.max(0.05, scale);
+                // Diamond ring on the tile — earthy brown pulsing gently
+                let pulse = 0.75 + 0.25 * Math.sin(performance.now() / 450 + r + c);
+                this.ctx.strokeStyle = `rgba(140,90,40,${0.85 * eff})`;
+                this.ctx.lineWidth = 2;
+                this.ctx.setLineDash([4, 3]);
+                this.ctx.beginPath();
+                this.ctx.moveTo(cx,               cy - ISO_TH * 0.75 * eff);
+                this.ctx.lineTo(cx + ISO_TW * 0.75 * eff, cy);
+                this.ctx.lineTo(cx,               cy + ISO_TH * 0.75 * eff);
+                this.ctx.lineTo(cx - ISO_TW * 0.75 * eff, cy);
+                this.ctx.closePath();
+                this.ctx.stroke();
+                this.ctx.setLineDash([]);
+                // Little dirt clumps around the base
+                this.ctx.fillStyle = `rgba(90,60,30,${0.8 * eff * pulse})`;
+                for (let i = 0; i < 6; i++) {
+                    let a = i * Math.PI / 3;
+                    let dx = cx + Math.cos(a) * 16 * eff;
+                    let dy = cy + Math.sin(a) * 8 * eff + 2;
+                    this.ctx.beginPath();
+                    this.ctx.ellipse(dx, dy, 2.4, 1.4, 0, 0, Math.PI * 2);
+                    this.ctx.fill();
+                }
+                // Shield glyph in the middle
+                this.ctx.fillStyle = `rgba(210,175,100,${0.85 * eff})`;
+                this.ctx.font = `${Math.round(14 * eff)}px Arial`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillText('🛡', cx, cy - 2);
+                this.ctx.restore();
+            }
+
+            // Red crosshair "aiming" aura under an Archer. Concentric rings
+            // subtly rotate to convey focused targeting.
+            drawAimingAura(r, c, scale = 1, flash = 0) {
+                let [cx, cy] = this.isoCenter(r, c);
+                let now = performance.now();
+                this.ctx.save();
+                if (flash > 0.01) {
+                    let ringR = 22 + flash * 22;
+                    let grad = this.ctx.createRadialGradient(cx, cy, 0, cx, cy, ringR);
+                    grad.addColorStop(0, `rgba(255,120,100,${0.75 * flash})`);
+                    grad.addColorStop(1, 'rgba(180,30,20,0)');
+                    this.ctx.fillStyle = grad;
+                    this.ctx.fillRect(cx - ringR, cy - ringR, ringR * 2, ringR * 2);
+                }
+                let eff = Math.max(0.05, scale);
+                let pulse = 0.7 + 0.3 * Math.sin(now / 240 + r + c);
+                this.ctx.strokeStyle = `rgba(220,60,60,${0.85 * eff})`;
+                this.ctx.lineWidth = 1.5;
+                // Outer dashed ring, rotating
+                this.ctx.translate(cx, cy);
+                this.ctx.rotate((now / 1200) % (Math.PI * 2));
+                this.ctx.setLineDash([5, 4]);
+                this.ctx.beginPath();
+                this.ctx.ellipse(0, 0, 18 * eff, 10 * eff, 0, 0, Math.PI * 2);
+                this.ctx.stroke();
+                this.ctx.setLineDash([]);
+                this.ctx.rotate(-(now / 1200) % (Math.PI * 2));
+                // Cross hairs
+                this.ctx.strokeStyle = `rgba(255,120,100,${0.9 * eff * pulse})`;
+                this.ctx.lineWidth = 1.5;
+                this.ctx.beginPath();
+                this.ctx.moveTo(-16 * eff, 0); this.ctx.lineTo(-6 * eff, 0);
+                this.ctx.moveTo( 6 * eff, 0); this.ctx.lineTo(16 * eff, 0);
+                this.ctx.moveTo(0, -9 * eff); this.ctx.lineTo(0, -3 * eff);
+                this.ctx.moveTo(0,  3 * eff); this.ctx.lineTo(0, 9 * eff);
+                this.ctx.stroke();
+                // Center dot
+                this.ctx.fillStyle = `rgba(255,220,170,${0.95 * eff})`;
+                this.ctx.beginPath();
+                this.ctx.arc(0, 0, 2.2 * eff, 0, Math.PI * 2);
+                this.ctx.fill();
+                this.ctx.restore();
+            }
+
             // Animate movements + attacks during ACTION_RESOLVE phase.
-            // Timeline over anim.duration (2.2s):
-            //   0.00-0.50: units slide from start → end (ease-in-out)
-            //   0.45-0.85: attack effects flash; dead units fade out
-            //   0.85-1.00: hold final state
+            // Timeline over anim.duration (3.3s):
+            //   0.00-0.12: prep flash — scorch tiles ignite, prep auras pulse in
+            //   0.12-0.55: units slide from start → end (ease-in-out)
+            //   0.55-0.92: attack effects flash; dead units fade out
+            //   0.92-1.00: hold final state
             drawActionAnim(game) {
                 let anim = game.animation;
                 let elapsed = performance.now() - anim.startTime;
                 let t = Math.min(1, elapsed / anim.duration);
 
-                // Movement progress (0..1 over first 50% of timeline)
-                let moveT = Math.min(1, t / 0.50);
+                // Prep progress (0..1 over [0.00, 0.12])
+                let prepT = Math.min(1, t / 0.12);
+                // Movement progress (0..1 over [0.12, 0.55])
+                let moveT = Math.max(0, Math.min(1, (t - 0.12) / 0.43));
                 let easedT = moveT < 0.5
                     ? 4 * moveT * moveT * moveT
                     : 1 - Math.pow(-2 * moveT + 2, 3) / 2;
@@ -4084,17 +4598,17 @@
                 for (let m of anim.moves) {
                     let ar, ac, blinkAlpha = 1;
                     if (m.blinked) {
-                        // Teleport: stay at origin until 25%, vanish, reappear at dest from 50%.
-                        if (t < 0.25) {
+                        // Teleport: stay at origin until 33%, vanish, reappear at dest from 55%.
+                        // Shifted to line up with the new prep→move→attack timeline.
+                        if (t < 0.33) {
                             ar = m.startR; ac = m.startC;
-                            blinkAlpha = 1 - (t / 0.25); // fade out
-                        } else if (t < 0.50) {
-                            // mid-blink: invisible (sparkle drawn separately)
+                            blinkAlpha = Math.max(0, 1 - (t - 0.12) / 0.21); // fade out during move
+                        } else if (t < 0.55) {
                             ar = m.endR; ac = m.endC;
                             blinkAlpha = 0;
                         } else {
                             ar = m.endR; ac = m.endC;
-                            blinkAlpha = Math.min(1, (t - 0.50) / 0.25); // fade in
+                            blinkAlpha = Math.min(1, (t - 0.55) / 0.20); // fade in
                         }
                     } else {
                         ar = m.startR + (m.endR - m.startR) * easedT;
@@ -4131,11 +4645,11 @@
                 }
 
                 // Fade window for dead units: start fading after moves finish
-                let fadeT = Math.max(0, Math.min(1, (t - 0.50) / 0.35));
+                let fadeT = Math.max(0, Math.min(1, (t - 0.55) / 0.32));
 
                 // Compute whether we're in the attack window (for hit recoil)
-                let inAttackWindow = t >= 0.45 && t < 0.85;
-                let attackLocalT = inAttackWindow ? (t - 0.45) / 0.40 : 0;
+                let inAttackWindow = t >= 0.55 && t < 0.92;
+                let attackLocalT = inAttackWindow ? (t - 0.55) / 0.37 : 0;
 
                 for (let d of drawList) {
                     let alpha = d.blinkAlpha != null ? d.blinkAlpha : 1;
@@ -4196,10 +4710,13 @@
                 // Blink sparkles at origin (during fade-out) and destination (during fade-in)
                 for (let d of drawList) {
                     if (!d.blinked) continue;
-                    let phase = t < 0.5 ? (t / 0.5) : ((t - 0.5) / 0.5);
+                    // Sparkle around blinker at origin (first half of move) then at dest (second half).
+                    // Move window is [0.12, 0.55] — split at 0.335.
+                    let phase = t < 0.335 ? ((t - 0.12) / 0.215) : ((t - 0.335) / 0.215);
+                    phase = Math.max(0, Math.min(1, phase));
                     let pulse = Math.sin(phase * Math.PI); // 0..1..0
                     if (pulse <= 0.01) continue;
-                    let [r0, c0] = t < 0.5 ? [d.startR, d.startC] : [d.endR, d.endC];
+                    let [r0, c0] = t < 0.335 ? [d.startR, d.startC] : [d.endR, d.endC];
                     let [bx, by] = this.isoCenter(r0, c0);
                     by -= 18;
                     // Glow disc
@@ -4218,9 +4735,9 @@
                     this.ctx.fillText('✧', bx + 18, by - 4);
                 }
 
-                // Attack effects during 0.45 - 0.85
-                if (t >= 0.45 && t < 0.85) {
-                    let localT = (t - 0.45) / 0.40;
+                // Attack effects during 0.55 - 0.92 (shifted for prep window)
+                if (t >= 0.55 && t < 0.92) {
+                    let localT = (t - 0.55) / 0.37;
                     let flashA = Math.sin(localT * Math.PI); // 0..1..0
                     this.drawAttackEffects(game, anim, flashA);
                 }
@@ -8251,6 +8768,31 @@
                         if (u.type === 'Rogue') {
                             this.drawButton(game, 'ability_trap', 14, abilityY, 180, 36, '🧨 Place Trap', {color: '#a06030', font: 'bold 13px Arial'});
                         }
+                        if (u.type === 'Mage') {
+                            // Scorch Earth is a PREPARATION decision — only available
+                            // when the Mage commits to staying in place this turn.
+                            // No button at all if they planned a move.
+                            let stayedPut = u.plannedR === u.r && u.plannedC === u.c;
+                            if (stayedPut) {
+                                this.drawButton(game, 'ability_fire', 14, abilityY, 180, 36, '🔥 Scorch Earth (×2)', {color: '#c04020', font: 'bold 13px Arial'});
+                            }
+                        }
+                        if (u.type === 'Squire') {
+                            // Dig In: only when the Squire commits to staying put.
+                            // 2 turns of +2 Me def + bump-immunity; no attack while dug in.
+                            let stayedPut = u.plannedR === u.r && u.plannedC === u.c;
+                            if (stayedPut && u.dugInTurns === 0) {
+                                this.drawButton(game, 'ability_dig_in', 14, abilityY, 180, 36, '🛡️ Dig In', {color: '#6a4a20', font: 'bold 13px Arial'});
+                            }
+                        }
+                        if (u.type === 'Archer') {
+                            // Aim: only when the Archer commits to staying put.
+                            // Hold aim until next shot (×2 damage) OR movement breaks it.
+                            let stayedPut = u.plannedR === u.r && u.plannedC === u.c;
+                            if (stayedPut && !u.aiming) {
+                                this.drawButton(game, 'ability_aim', 14, abilityY, 180, 36, '🎯 Aim', {color: '#a03030', font: 'bold 13px Arial'});
+                            }
+                        }
                         if (u.type === 'Adept') {
                             this.drawButton(game, 'ability_beacon', 14, abilityY, 180, 36, '🔮 Beacon', {color: '#6a4aa0', font: 'bold 13px Arial'});
                         }
@@ -8292,6 +8834,13 @@
                         this.ctx.fillText('Click a tile within 2 squares to place your trap (no attack this turn)', 14, UI_TOP + 115);
                         this.drawButton(game, 'plan_cancel_ability', 14, UI_TOP + 130, 220, 36, '← Back to Attack', {color: '#5a5a8a'});
                         this.drawButton(game, 'plan_deselect', 250, UI_TOP + 130, 140, 36, '✕ Deselect', {color: '#7a3a3a'});
+                    } else if (game.planStep === 'FIRE') {
+                        this.ctx.fillStyle = '#ff6020';
+                        this.ctx.font = 'bold 13px Arial';
+                        let placed = (u.plannedFire || []).length;
+                        this.ctx.fillText(`Scorch up to 2 tiles within 3 squares (${placed}/2). Click a scorched tile again to un-pick.`, 14, UI_TOP + 115);
+                        this.drawButton(game, 'ability_fire_done', 14, UI_TOP + 130, 180, 36, placed > 0 ? '✓ Done Scorching' : '← Back to Attack', {color: placed > 0 ? '#c04020' : '#5a5a8a'});
+                        this.drawButton(game, 'plan_deselect', 210, UI_TOP + 130, 140, 36, '✕ Deselect', {color: '#7a3a3a'});
                     } else if (game.planStep === 'BEACON') {
                         this.ctx.fillStyle = '#b080ff';
                         this.ctx.font = 'bold 13px Arial';
@@ -9288,6 +9837,7 @@
                     su.plannedC = su.c;
                     su.plannedAtk = null;
                     su.plannedTrap = null;
+                    su.plannedFire = null;
                     su.plannedBeacon = null;
                     su.plannedAid = null;
                     su.ordered = true;
@@ -9299,6 +9849,7 @@
             if (key === 'plan_deselect') {
                 if (game.selectedUnit) {
                     game.selectedUnit.plannedTrap = null;
+                    game.selectedUnit.plannedFire = null;
                     game.selectedUnit.plannedBeacon = null;
                     game.selectedUnit.plannedAid = null;
                 }
@@ -9307,9 +9858,10 @@
                 return true;
             }
             if (key === 'plan_skip_attack') {
-                if (game.selectedUnit && (game.planStep === 'ATTACK' || game.planStep === 'TRAP' || game.planStep === 'BEACON' || game.planStep === 'AID')) {
+                if (game.selectedUnit && (game.planStep === 'ATTACK' || game.planStep === 'TRAP' || game.planStep === 'FIRE' || game.planStep === 'BEACON' || game.planStep === 'AID')) {
                     game.selectedUnit.plannedAtk = null;
                     game.selectedUnit.plannedTrap = null;
+                    game.selectedUnit.plannedFire = null;
                     game.selectedUnit.plannedBeacon = null;
                     game.selectedUnit.plannedAid = null;
                     game.selectedUnit.ordered = true;
@@ -9323,6 +9875,7 @@
                     game.selectedUnit.plannedR = null;
                     game.selectedUnit.plannedC = null;
                     game.selectedUnit.plannedTrap = null;
+                    game.selectedUnit.plannedFire = null;
                     game.selectedUnit.plannedBeacon = null;
                     game.selectedUnit.plannedAid = null;
                     game.planStep = 'MOVE';
@@ -9336,6 +9889,62 @@
                     game.selectedUnit.plannedShadow = null;
                     game.selectedUnit.plannedStealth = false;
                     game.planStep = 'TRAP';
+                }
+                return true;
+            }
+            if (key === 'ability_fire') {
+                let su = game.selectedUnit;
+                // Scorch Earth requires the Mage to stay in place — button is
+                // only rendered in that case, but guard here too in case the
+                // click key is ever invoked from elsewhere (keyboard, etc).
+                let stayedPut = su && su.plannedR === su.r && su.plannedC === su.c;
+                if (su && su.type === 'Mage' && stayedPut) {
+                    su.plannedAtk = null;
+                    su.plannedFire = [];
+                    su.plannedAid = null;
+                    game.planStep = 'FIRE';
+                }
+                return true;
+            }
+            if (key === 'ability_dig_in') {
+                let su = game.selectedUnit;
+                let stayedPut = su && su.plannedR === su.r && su.plannedC === su.c;
+                if (su && su.type === 'Squire' && stayedPut && su.dugInTurns === 0) {
+                    su.plannedAtk = null;
+                    su.plannedTrap = null;
+                    su.plannedAid = null;
+                    su.plannedDigIn = true;
+                    su.ordered = true;
+                    game.selectedUnit = null;
+                    game.planStep = null;
+                }
+                return true;
+            }
+            if (key === 'ability_aim') {
+                let su = game.selectedUnit;
+                let stayedPut = su && su.plannedR === su.r && su.plannedC === su.c;
+                if (su && su.type === 'Archer' && stayedPut && !su.aiming) {
+                    su.plannedAtk = null;
+                    su.plannedAid = null;
+                    su.plannedAim = true;
+                    su.ordered = true;
+                    game.selectedUnit = null;
+                    game.planStep = null;
+                }
+                return true;
+            }
+            if (key === 'ability_fire_done') {
+                let su = game.selectedUnit;
+                if (su && game.planStep === 'FIRE') {
+                    if (su.plannedFire && su.plannedFire.length > 0) {
+                        su.ordered = true;
+                        game.selectedUnit = null;
+                        game.planStep = null;
+                    } else {
+                        // No fires placed — cancel back to ATTACK step
+                        su.plannedFire = null;
+                        game.planStep = 'ATTACK';
+                    }
                 }
                 return true;
             }
@@ -9881,6 +10490,9 @@
                 plannedR: u.plannedR, plannedC: u.plannedC,
                 plannedAtk: u.plannedAtk, plannedDest: u.plannedDest,
                 plannedRain: u.plannedRain, plannedTrap: u.plannedTrap,
+                plannedFire: u.plannedFire,
+                plannedDigIn: u.plannedDigIn, plannedAim: u.plannedAim,
+                dugInTurns: u.dugInTurns, aiming: u.aiming,
                 plannedBeacon: u.plannedBeacon,
                 plannedShadow: u.plannedShadow, plannedAid: u.plannedAid,
                 plannedStealth: u.plannedStealth, plannedBlink: u.plannedBlink,
@@ -9913,6 +10525,11 @@
             u.plannedDest = o.plannedDest || null;
             u.plannedRain = o.plannedRain || null;
             u.plannedTrap = o.plannedTrap || null;
+            u.plannedFire = o.plannedFire || null;
+            u.plannedDigIn = !!o.plannedDigIn;
+            u.plannedAim = !!o.plannedAim;
+            u.dugInTurns = o.dugInTurns || 0;
+            u.aiming = !!o.aiming;
             u.plannedBeacon = o.plannedBeacon || null;
             u.plannedShadow = o.plannedShadow || null;
             u.plannedAid = o.plannedAid || null;
@@ -9944,12 +10561,14 @@
                         s.plannedR = null; s.plannedC = null;
                         s.plannedAtk = null; s.plannedDest = null;
                         s.plannedRain = null; s.plannedTrap = null;
+                        s.plannedFire = null;
                         s.plannedBeacon = null;
                     }
                     return s;
                 }),
                 p2: game.p2Units.map(serializeUnit),
                 traps: game.traps.map(t => ({...t})),
+                fires: game.fires.map(f => ({player: f.player, r: f.r, c: f.c, ownerIdRef: f.ownerId ? f.ownerId.id : null})),
                 beacons: game.beacons.map(b => ({player: b.player, r: b.r, c: b.c, ownerIdRef: b.ownerId ? b.ownerId.id : null})),
                 stripped: !!stripP1Plans
             };
@@ -9973,6 +10592,10 @@
                 player: b.player, r: b.r, c: b.c,
                 ownerId: b.ownerIdRef != null ? unitById[b.ownerIdRef] : null
             })).filter(b => b.ownerId); // drop stale beacons whose adept is gone
+            game.fires = (snap.fires || []).map(f => ({
+                player: f.player, r: f.r, c: f.c,
+                ownerId: f.ownerIdRef != null ? unitById[f.ownerIdRef] : null
+            }));
             game.selectedUnit = null;
             game.planStep = null;
             // Phase-entry resets that normally happen inside nextPhase()
@@ -10156,6 +10779,13 @@
                 ownerId: b.ownerIdRef != null ? unitById[b.ownerIdRef] : null
             })).filter(b => b.ownerId);
             game.beacons = ourBeacons.concat(theirBeacons);
+            // Merge fires: keep our own, replace opponent's batch.
+            let ourFires = game.fires.filter(f => f.player !== oppPlayer);
+            let theirFires = (snap.fires || []).map(f => ({
+                player: f.player, r: f.r, c: f.c,
+                ownerId: f.ownerIdRef != null ? unitById[f.ownerIdRef] : null
+            }));
+            game.fires = ourFires.concat(theirFires);
             game.remoteOpponentSnapshot = null;
         }
 
@@ -10346,6 +10976,31 @@
                             su.ordered = true;
                             game.selectedUnit = null;
                             game.planStep = null;
+                        }
+                    } else if (game.planStep === 'FIRE' && game.selectedUnit) {
+                        // Mage fire placement: up to 2 tiles within Chebyshev 3
+                        // of the mage's planned position. Click a tile to add;
+                        // click a tile already in the list to REMOVE it. Auto-
+                        // commit after the 2nd tile; user can also hit "Done"
+                        // with 1 placed.
+                        let su = game.selectedUnit;
+                        let fromR = su.plannedR != null ? su.plannedR : su.r;
+                        let fromC = su.plannedC != null ? su.plannedC : su.c;
+                        let dist = Math.max(Math.abs(r - fromR), Math.abs(c - fromC));
+                        let inBounds = r >= 0 && r < ROWS && c >= 0 && c < COLS;
+                        if (inBounds && dist > 0 && dist <= 3) {
+                            if (!su.plannedFire) su.plannedFire = [];
+                            let idx = su.plannedFire.findIndex(f => f.r === r && f.c === c);
+                            if (idx >= 0) {
+                                su.plannedFire.splice(idx, 1);
+                            } else if (su.plannedFire.length < 2) {
+                                su.plannedFire.push({r, c});
+                                if (su.plannedFire.length >= 2) {
+                                    su.ordered = true;
+                                    game.selectedUnit = null;
+                                    game.planStep = null;
+                                }
+                            }
                         }
                     } else if (game.planStep === 'BEACON' && game.selectedUnit) {
                         // Place Adept beacon on any in-bounds tile
