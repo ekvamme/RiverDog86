@@ -1238,7 +1238,12 @@
                 // active during this turn's combat AND the next turn. Archers
                 // that planned Aim flip their aiming flag. Captured IDs feed
                 // the animation's prep-window aura bloom.
+                //
+                // Mages with plannedFire are captured as "channeling" for the
+                // animation — they show the same aura as Aim while their fires
+                // telegraph this turn (fires don't light until end of resolve).
                 let newPrepIds = [];
+                let channelingIds = [];
                 for (let u of [...this.p1Units, ...this.p2Units]) {
                     if (u.plannedDigIn) {
                         u.dugInTurns = 2;
@@ -1252,8 +1257,16 @@
                         u._activeSynergies = [...(u._activeSynergies || []), 'Aim'];
                         if (u.id != null) newPrepIds.push(u.id);
                     }
+                    if (u.type === 'Mage' && u.plannedFire && u.plannedFire.length > 0) {
+                        u._activeSynergies = [...(u._activeSynergies || []), 'Channeling Fire'];
+                        if (u.id != null) {
+                            channelingIds.push(u.id);
+                            newPrepIds.push(u.id); // also bloom the mage's aura in the prep window
+                        }
+                    }
                 }
                 this._pendingPrepIds = newPrepIds;
+                this._pendingChannelingIds = channelingIds;
 
                 // --- COLLISION / WEIGHT SYSTEM ---
                 let allUnits = [...this.p1Units, ...this.p2Units];
@@ -1901,35 +1914,31 @@
                 this.cullDeadUnits();
 
                 // ===== FIRE TERRAIN RESOLUTION =====
-                // Mages place up to 2 fire tiles that burn for two turns (the
-                // placement turn and the one after). Any unit whose final
-                // position lands on a fire tile takes Magic damage (8 base -
-                // target Ma defense). Chargers whose mid-tile passed through a
-                // fire take unmitigated damage — momentum carries them straight
-                // through the flames (matches trap semantics). Mage is immune
-                // to their own fire; allies are NOT (fire magic is indiscrim-
-                // inate, consistent with Adept firebolt friendly-fire).
+                // Scorch Earth is a TELEGRAPHED ability: the Mage spends turn N
+                // channeling (no fires on board yet, just an aura), and fires
+                // ignite at the END of turn N's resolve. They're visible on
+                // turn N+1's planning (opponent sees them and routes around),
+                // then damage anyone who ends on them / charges through the
+                // mid-tile during turn N+1 AND turn N+2. After that they burn
+                // out. Mage is immune to their own fire; allies are NOT.
                 //
-                // Order: promote newly-planned fires FIRST (so they damage the
-                // charger that just rode through them this turn), then apply
-                // damage, then decrement turnsLeft and remove expired fires.
-                // Also capture the freshly-lit tiles so the resolve animation
-                // can flare them up BEFORE movement plays back.
+                // Order here: apply damage from pre-existing fires (placed on
+                // prior turns), then age them. Fresh plannedFire is promoted
+                // at END of resolveAction so it misses this turn's damage pass.
+                // Fires with turnsLeft === 2 at start of this resolve are the
+                // ones whose warning turn just ended — they're newly ACTIVE
+                // this turn, so capture them for the prep-window bloom.
                 let newFireTiles = [];
-                for (let u of [...this.p1Units, ...this.p2Units]) {
-                    if (!u.plannedFire || u.plannedFire.length === 0) continue;
-                    for (let {r, c} of u.plannedFire) {
-                        this.fires.push({player: u.player, r, c, ownerId: u, turnsLeft: 2});
-                        newFireTiles.push({r, c, player: u.player});
+                for (let f of this.fires) {
+                    if (f.turnsLeft === 2) {
+                        newFireTiles.push({r: f.r, c: f.c, player: f.player});
                     }
-                    u.plannedFire = null;
-                    u._activeSynergies = [...(u._activeSynergies || []), 'Scorch Earth'];
                 }
                 this._pendingNewFires = newFireTiles;
 
                 // Break aim on any aiming archer who actually moved this turn.
-                // (Movement commit has already set u.r/u.c to final position, so
-                // we can compare against origPos.) Aim is preserved for archers
+                // Movement commit has already set u.r/u.c to final position, so
+                // we can compare against origPos. Aim is preserved for archers
                 // that stayed put — they can hold the shot indefinitely until
                 // firing or moving.
                 for (let u of [...this.p1Units, ...this.p2Units]) {
@@ -2314,9 +2323,9 @@
                         }
 
                         // Aim (Archer): committed preparation turn gives the
-                        // next shot ×2 damage. Consumed on use — one-shot bonus.
+                        // next shot ×2.5 damage. Consumed on use — one-shot bonus.
                         if (u.type === 'Archer' && u.aiming) {
-                            mul *= 2;
+                            mul *= 2.5;
                             u._aimConsumedThisTurn = true;
                             u._activeSynergies = [...(u._activeSynergies || []), 'Aimed Shot'];
                         }
@@ -2544,6 +2553,23 @@
                     }
                 }
 
+                // ===== SCORCH EARTH PROMOTION (at END of resolve) =====
+                // Telegraphed design: Mages that planned Scorch Earth this turn
+                // were visibly channeling (aura on mage + no fires on board).
+                // Fires ignite NOW, at the end of their turn, with turnsLeft=2.
+                // Next turn's resolve sees them at turnsLeft=2 (newly active →
+                // bloom animation), damage passes run, age to 1. Turn after:
+                // damage, age to 0, remove. Net: 1 turn warning + 2 turns of
+                // burning on the board.
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (!u.plannedFire || u.plannedFire.length === 0) continue;
+                    for (let {r, c} of u.plannedFire) {
+                        this.fires.push({player: u.player, r, c, ownerId: u, turnsLeft: 2});
+                    }
+                    u.plannedFire = null;
+                    u._activeSynergies = [...(u._activeSynergies || []), 'Scorch Earth'];
+                }
+
                 // Append this turn's block to the match log AFTER all state
                 // updates so survivors[] reflects the post-resolution board.
                 this.logTurn();
@@ -2627,11 +2653,13 @@
                     damages,
                     newFires: this._pendingNewFires || [],
                     newPrepIds: this._pendingPrepIds || [],
+                    channelingIds: this._pendingChannelingIds || [],
                     combatLog: [...this.combatLog],
                     preActionSnapshot: this._preActionSnapshot || []
                 };
                 this._pendingNewFires = [];
                 this._pendingPrepIds = [];
+                this._pendingChannelingIds = [];
 
                 // Populate the combat log div
                 let logDiv = document.getElementById('combatLog');
@@ -4080,6 +4108,22 @@
                     || game.phase === 'READY_ACTION'
                     || (game.phase === 'REMOTE_WAIT' && game.gameMode === 'Remote');
                 if (auraPhases) {
+                    // Determine which mages are "channeling" — they planned
+                    // Scorch Earth this turn and need an aura to telegraph it.
+                    // During planning: check plannedFire directly. During resolve
+                    // animation: plannedFire has been cleared (fires promoted at
+                    // end of resolveAction), so use the captured channelingIds
+                    // from the animation snapshot.
+                    let channelingSet = new Set();
+                    if (game.phase === 'ACTION_RESOLVE' && game.animation && game.animation.channelingIds) {
+                        for (let id of game.animation.channelingIds) channelingSet.add(id);
+                    } else {
+                        for (let u of [...game.p1Units, ...game.p2Units]) {
+                            if (u.type === 'Mage' && u.plannedFire && u.plannedFire.length > 0) {
+                                channelingSet.add(u.id);
+                            }
+                        }
+                    }
                     for (let u of [...game.p1Units, ...game.p2Units]) {
                         // During placement-reveal, don't leak opponent auras
                         // (handled by hideOpponentForPlacement above — but
@@ -4094,6 +4138,11 @@
                             this.drawDigInAura(ar, ac, sx, fx);
                         }
                         if (u.type === 'Archer' && u.aiming) {
+                            this.drawAimingAura(u.r, u.c, sx, fx);
+                        }
+                        if (u.type === 'Mage' && channelingSet.has(u.id)) {
+                            // Channeling Scorch Earth — same aura as Aim so the
+                            // player learns "rotating crosshair = committed prep".
                             this.drawAimingAura(u.r, u.c, sx, fx);
                         }
                     }
