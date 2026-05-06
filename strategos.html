@@ -489,6 +489,8 @@
                 this.campaignScore = [0, 0]; // [P1 wins, P2 wins]
                 this.campaignTotal = 7; // best of 7
                 this.animation = null; // movement/attack animation state during ACTION_RESOLVE
+                // Phased animation speed settings (configurable via settings UI)
+                this.animSpeedSettings = { delay: 2000, speed: 1.0 };
                 this.traps = []; // [{player, r, c, ownerId}] - placed by Rogues, persist on board
                 this.beacons = []; // [{player, ownerId, r, c}] — Adept Beacon Mark; persists while owner alive
                 // Match log (see resolveAction / drawGameOver). Also reset
@@ -856,7 +858,7 @@
             // destinations, preventing unit stacking during plan.
             tileKey(r, c) { return `${r},${c}`; }
 
-            hit(att, tgt, halved, damageType, multiplier, flatBonus, logTag) {
+            hit(att, tgt, halved, damageType, multiplier, flatBonus, logTag, dmgSource) {
                 // Use the attacker's primary damage type code
                 if (!damageType) {
                     let at = STATS[att.type].atk_type;
@@ -889,7 +891,7 @@
                 if (dmg < 1) dmg = 1;
                 tgt.hp -= dmg;
                 // Record for floating damage number in the action animation
-                this.recordDamage(tgt, dmg, 'dmg', att, damageType);
+                this.recordDamage(tgt, dmg, 'dmg', att, damageType, dmgSource);
                 // Combat log entry
                 if (this.combatLog) {
                     let pName = att.player === 1 ? 'P1' : 'P2';
@@ -1092,7 +1094,12 @@
             // Log a damage event so drawActionAnim can float a number above
             // the hit unit during the attack window. `kind` tunes color:
             // 'dmg' for combat, 'cull' for the culling attrition tick.
-            recordDamage(unit, amount, kind, attacker, damageType) {
+            // `source` tags the resolution sub-step for phased playback:
+            //   'movement' = trample, readied shot, trap, squeeze, edge impact
+            //   'combat'   = normal attacks, cleave, volley, arcing splash
+            //   'finale'   = charge 2x, rain fire, shadow strike, beacon mark, arcing center, volley
+            //   'attrition'= the Weaver's culling tick
+            recordDamage(unit, amount, kind, attacker, damageType, source) {
                 if (!this.pendingDamages) this.pendingDamages = [];
                 if (amount <= 0 || !unit) return;
                 this.pendingDamages.push({
@@ -1100,7 +1107,8 @@
                     attacker: attacker || null,
                     damageType: damageType || null,
                     targetType: unit.type,
-                    targetHpAfter: unit.hp
+                    targetHpAfter: unit.hp,
+                    source: source || 'combat'
                 });
             }
 
@@ -1494,7 +1502,7 @@
                                     winner.plannedR = winOrig.r;
                                     winner.plannedC = winOrig.c;
                                     bounced.add(winner);
-                                    this.hit(winner, u, true, 'Me', 1, 0, 'Edge impact');
+                                    this.hit(winner, u, true, 'Me', 1, 0, 'Edge impact', 'movement');
                                     if (this.combatLog) {
                                         let tName = u.player === 1 ? 'P1' : 'P2';
                                         let wName = winner.player === 1 ? 'P1' : 'P2';
@@ -1515,7 +1523,7 @@
                                     winner.plannedR = winOrig.r;
                                     winner.plannedC = winOrig.c;
                                     bounced.add(winner);
-                                    this.hit(winner, u, true, 'Me', 1, 0, 'Edge impact');
+                                    this.hit(winner, u, true, 'Me', 1, 0, 'Edge impact', 'movement');
                                     if (this.combatLog) {
                                         let tName = u.player === 1 ? 'P1' : 'P2';
                                         let wName = winner.player === 1 ? 'P1' : 'P2';
@@ -1547,7 +1555,9 @@
                         if (other !== u && other.player === u.player
                             && oDest.r === dest.r && oDest.c === dest.c
                             && !bounced.has(other)) {
+                            let prevHpSq = u.hp;
                             u.hp = 0; // squeeze kill
+                            this.recordDamage(u, prevHpSq, 'dmg', null, null, 'movement');
                             if (this.combatLog) {
                                 let tName = u.player === 1 ? 'P1' : 'P2';
                                 this.combatLog.push(`${tName} ${u.type} [Squeeze]: crushed (bounced into friendly)`);
@@ -1576,7 +1586,9 @@
                             u.plannedC = orig.c;
                             finalCells[origKey] = u;
                         } else {
+                            let prevHpOv = u.hp;
                             u.hp = 0; // overlap squeeze
+                            this.recordDamage(u, prevHpOv, 'dmg', null, null, 'movement');
                             if (this.combatLog) {
                                 let tName = u.player === 1 ? 'P1' : 'P2';
                                 this.combatLog.push(`${tName} ${u.type} [Squeeze]: crushed (overlap after resolution)`);
@@ -1624,7 +1636,7 @@
                     let t = this.getUnitAt(midR, midC);
                     if (!t || t.player === u.player || t.hp <= 0) continue;
                     // Half Melee (cleave-equivalent) with full defense + aura applied.
-                    this.hit(u, t, true, 'Me', 1, 0, 'Trample');
+                    this.hit(u, t, true, 'Me', 1, 0, 'Trample', 'movement');
                 }
                 this.cullDeadUnits();
 
@@ -1646,7 +1658,7 @@
                         if (e.hp <= 0 || STATS[e.type].weight !== 3) continue;
                         let dr = Math.abs(u.r - e.r), dc = Math.abs(u.c - e.c);
                         if (dr <= 1 && dc <= 1 && (dr + dc) > 0) {
-                            this.hit(u, e, true, 'P', 1, 0, 'Readied Shot');
+                            this.hit(u, e, true, 'P', 1, 0, 'Readied Shot', 'movement');
                             break; // one shot per Archer
                         }
                     }
@@ -1769,7 +1781,7 @@
                             dmg = Math.max(1, baseDmg - STATS[e.type].dfn.Ex);
                         }
                         e.hp -= dmg;
-                        this.recordDamage(e, dmg, 'dmg', trap.ownerId, 'Ex');
+                        this.recordDamage(e, dmg, 'dmg', trap.ownerId, 'Ex', 'movement');
                         if (this.combatLog) {
                             let trapOwnerType = trap.ownerId ? trap.ownerId.type : 'Rogue';
                             let pName = trap.player === 1 ? 'P1' : 'P2';
@@ -1789,7 +1801,7 @@
                         if (dr > splashRadius || dc > splashRadius) continue;
                         let dmg = Math.max(1, Math.floor((baseDmg - STATS[e.type].dfn.Ex) / 2));
                         e.hp -= dmg;
-                        this.recordDamage(e, dmg, 'dmg', trap.ownerId, 'Ex');
+                        this.recordDamage(e, dmg, 'dmg', trap.ownerId, 'Ex', 'movement');
                         if (this.combatLog) {
                             let trapOwnerType = trap.ownerId ? trap.ownerId.type : 'Rogue';
                             let pName = trap.player === 1 ? 'P1' : 'P2';
@@ -1814,6 +1826,7 @@
                     let tgt = this.getUnitAt(u.plannedAid.r, u.plannedAid.c);
                     if (tgt && tgt.player === u.player && tgt !== u && tgt.hp > 0) {
                         tgt.hp = Math.min(tgt.maxHp, tgt.hp + 2);
+                        u._usedLendAid = true; // flag for phased animation classification
                     }
                     u.plannedAid = null;
                 }
@@ -1840,7 +1853,9 @@
                             let behind = this.getBehindTiles(tgt);
                             let inBehind = behind.some(b => b.r === u.r && b.c === u.c);
                             if (inBehind) {
+                                let prevHp = tgt.hp;
                                 tgt.hp = 0; landed = true; // instant kill
+                                this.recordDamage(tgt, prevHp, 'dmg', u, 'Me', 'finale');
                                 if (this.combatLog) {
                                     let pName = u.player === 1 ? 'P1' : 'P2';
                                     let tName = tgt.player === 1 ? 'P1' : 'P2';
@@ -1898,7 +1913,7 @@
                         if (centerVictim) {
                             let dmg = Math.max(1, 14 - STATS[centerVictim.type].dfn.Ma);
                             centerVictim.hp -= dmg;
-                            this.recordDamage(centerVictim, dmg, 'dmg', u, 'Ma');
+                            this.recordDamage(centerVictim, dmg, 'dmg', u, 'Ma', 'finale');
                             if (this.combatLog) {
                                 let pName = u.player === 1 ? 'P1' : 'P2';
                                 let tName = centerVictim.player === 1 ? 'P1' : 'P2';
@@ -1922,7 +1937,7 @@
                             if (!v) continue;
                             let dmg = Math.max(1, 7 - STATS[v.type].dfn.Ma);
                             v.hp -= dmg;
-                            this.recordDamage(v, dmg, 'dmg', u, 'Ma');
+                            this.recordDamage(v, dmg, 'dmg', u, 'Ma', 'finale');
                             if (this.combatLog) {
                                 let pName = u.player === 1 ? 'P1' : 'P2';
                                 let tName = v.player === 1 ? 'P1' : 'P2';
@@ -1984,11 +1999,15 @@
                 for (let a of volleyCandidates) {
                     if (volleyUsed.has(a)) continue;
                     if (a.type !== 'Archer' || !a.plannedAtk) continue;
+                    // Volley requires pre-positioning: archer must not have moved
+                    if (a.plannedR !== a.r || a.plannedC !== a.c) continue;
                     let ta = a.plannedAtk;
                     if (ta.targetR == null) continue;
                     for (let b of volleyCandidates) {
                         if (a === b || volleyUsed.has(b)) continue;
                         if (b.type !== 'Archer' || b.player !== a.player) continue;
+                        // Both archers must be stationary for volley
+                        if (b.plannedR !== b.r || b.plannedC !== b.c) continue;
                         if (!b.plannedAtk || b.plannedAtk.targetR == null) continue;
                         // Adjacency type: orthogonal or diagonal (both Chebyshev 1).
                         let ddr = b.plannedR - a.plannedR, ddc = b.plannedC - a.plannedC;
@@ -2049,6 +2068,8 @@
                 let arcingTiles = new Map(); // key "r,c" -> [units]
                 for (let u of allUnits) {
                     if (!u.plannedAtk) continue;
+                    // Arcing Firebolt requires pre-positioning: caster must not have moved
+                    if (u.plannedR !== u.r || u.plannedC !== u.c) continue;
                     let focusTile = this.getFocusTile(u);
                     if (!focusTile) continue;
                     if (u.type !== 'Adept' && u.type !== 'Mage' && u.type !== 'Archmage') continue;
@@ -2170,7 +2191,12 @@
 
                         let halved = i > 0;
                         let hitTag = isCharge ? 'Charge' : 'Attack';
-                        this.hit(u, tgt, halved, damageType, mul, steadyBonus + anvilBonus + focusChanBonus, hitTag);
+                        // Determine source for phased playback
+                        let atkSource = 'combat';
+                        if (isCharge) atkSource = 'finale';
+                        else if ((u._activeSynergies || []).includes('Beacon Mark')) atkSource = 'finale';
+                        else if (mul >= 2.5 && (u.type === 'Adept' || u.type === 'Mage' || u.type === 'Archmage')) atkSource = 'finale';
+                        this.hit(u, tgt, halved, damageType, mul, steadyBonus + anvilBonus + focusChanBonus, hitTag, atkSource);
 
                         // Flame Arrow: Archer + Adept targeting same tile — add
                         // half of the Adept's magic damage on top of the arrow hit.
@@ -2181,7 +2207,7 @@
                                 if (adFocus && adFocus.r === targetR && adFocus.c === targetC) {
                                     let adMag = Math.max(1, STATS['Adept'].atk.Ma - STATS[tgt.type].dfn.Ma);
                                     tgt.hp -= Math.floor(adMag / 2);
-                                    this.recordDamage(tgt, Math.floor(adMag / 2), 'dmg', ad, 'Ma');
+                                    this.recordDamage(tgt, Math.floor(adMag / 2), 'dmg', ad, 'Ma', atkSource);
                                     if (this.combatLog) {
                                         let pName = u.player === 1 ? 'P1' : 'P2';
                                         let tName = tgt.player === 1 ? 'P1' : 'P2';
@@ -2220,7 +2246,7 @@
                                     let ct = this.getPlannedUnitAt(cr, cc);
                                     if (ct && ct.player !== u.player && !cleaved.has(ct)) {
                                         cleaved.add(ct);
-                                        this.hit(u, ct, true, damageType, 1, 0, 'Cleave');
+                                        this.hit(u, ct, true, damageType, 1, 0, 'Cleave', atkSource);
                                     }
                                 }
                             }
@@ -2241,7 +2267,7 @@
                         if (mainR >= 0 && mainR < ROWS && mainC >= 0 && mainC < COLS) {
                             let t = this.getPlannedUnitAt(mainR, mainC);
                             if (t && t.player !== shooter.player) {
-                                this.hit(shooter, t, false, null, 1, 0, 'Volley');
+                                this.hit(shooter, t, false, null, 1, 0, 'Volley', 'finale');
                             }
                         }
                         let trailR = mainR + dr;
@@ -2249,7 +2275,7 @@
                         if (trailR >= 0 && trailR < ROWS && trailC >= 0 && trailC < COLS) {
                             let t2 = this.getPlannedUnitAt(trailR, trailC);
                             if (t2 && t2.player !== shooter.player) {
-                                this.hit(shooter, t2, true, null, 1, 0, 'Volley trail');
+                                this.hit(shooter, t2, true, null, 1, 0, 'Volley trail', 'finale');
                             }
                         }
                     }
@@ -2264,7 +2290,7 @@
                         if (!victim) continue;
                         let caster = burst.casters[0];
                         if (victim.player === caster.player) continue;
-                        this.hit(caster, victim, true, null, 1, 0, 'Arcing Firebolt splash');
+                        this.hit(caster, victim, true, null, 1, 0, 'Arcing Firebolt splash', 'finale');
                     }
                 }
 
@@ -2281,7 +2307,7 @@
                     for (let u of [...this.p1Units, ...this.p2Units]) {
                         let attrition = Math.max(1, Math.ceil(u.hp * 0.25));
                         u.hp -= attrition;
-                        this.recordDamage(u, attrition, 'cull');
+                        this.recordDamage(u, attrition, 'cull', null, null, 'attrition');
                         if (this.combatLog) {
                             let tName = u.player === 1 ? 'P1' : 'P2';
                             this.combatLog.push(`${tName} ${u.type} [Attrition]: ${attrition} dmg (25% of ${u.hp + attrition} remaining HP)`);
@@ -2343,10 +2369,11 @@
                 this.buildAnimationFromResolution(allUnits, origPos, animAttacks);
             }
 
-            // Build animation state (moves + attacks) consumed by drawActionAnim().
+            // Build phased animation state consumed by drawActionAnim().
             // Called at the end of resolveAction so the ACTION_RESOLVE phase plays
-            // an animated battle sequence before auto-advancing to PLAN_P1.
+            // an animated battle sequence in cinematic phases before auto-advancing.
             buildAnimationFromResolution(allUnits, origPos, animAttacks) {
+                // --- Build per-unit move data ---
                 let moves = [];
                 let deadUnits = [];
                 for (let u of allUnits) {
@@ -2372,52 +2399,298 @@
                         blinked
                     });
                 }
-                // Aggregate damage events per unit so multiple hits on the
-                // same target (cleave + trap, combined-arms focus fire, etc.)
-                // surface as ONE floating number instead of a stacked blur.
-                let dmgMap = new Map();
-                for (let d of (this.pendingDamages || [])) {
-                    let prev = dmgMap.get(d.unit);
-                    if (!prev) dmgMap.set(d.unit, {
-                        unit: d.unit, amount: 0, kind: d.kind, hits: []
-                    });
-                    let e = dmgMap.get(d.unit);
-                    e.amount += d.amount;
-                    if (d.kind === 'dmg') e.kind = 'dmg';
-                    e.hits.push({
-                        amount: d.amount,
-                        attacker: d.attacker ? d.attacker.type : null,
-                        attackerPlayer: d.attacker ? d.attacker.player : null,
-                        attackerUnit: d.attacker || null,
-                        damageType: d.damageType,
-                        kind: d.kind
-                    });
-                }
-                let damages = [];
-                for (let e of dmgMap.values()) {
-                    let r = e.unit.r != null ? e.unit.r : (e.unit.plannedR != null ? e.unit.plannedR : 0);
-                    let c = e.unit.c != null ? e.unit.c : (e.unit.plannedC != null ? e.unit.plannedC : 0);
-                    let targetType = e.unit.type;
-                    let targetHp = e.unit.hp;
-                    let targetMaxHp = e.unit.maxHp;
-                    let dead = e.unit.hp <= 0;
-                    let targetPlayer = e.unit.player;
-                    damages.push({ r, c, amount: e.amount, kind: e.kind,
-                        targetType, targetPlayer, targetHp, targetMaxHp, dead, hits: e.hits });
-                }
+
+                // --- Classify damage events by source ---
+                let allDamages = this.pendingDamages || [];
                 this.pendingDamages = [];
 
+                // Per-unit damage tracking for classification
+                let unitTookDamage = new Set();      // units that received any damage
+                let unitDealtDamage = new Set();     // units that dealt any damage
+                let unitTookMovementDmg = new Set(); // took damage from movement consequences
+                let unitFinaleAttacker = new Set();  // units with finale-source damage dealt
+                let unitDealtLendAid = new Set();    // units that used Lend Aid
+
+                for (let d of allDamages) {
+                    unitTookDamage.add(d.unit);
+                    if (d.attacker) {
+                        unitDealtDamage.add(d.attacker);
+                        if (d.source === 'finale') unitFinaleAttacker.add(d.attacker);
+                    }
+                    if (d.source === 'movement') unitTookMovementDmg.add(d.unit);
+                }
+
+                // Track Lend Aid users as "dealing damage" for phase classification
+                for (let u of allUnits) {
+                    if (u._usedLendAid) {
+                        unitDealtLendAid.add(u);
+                        u._usedLendAid = false; // consume flag
+                    }
+                }
+
+                // --- Classify each unit into a phase ---
+                let phase1Units = []; // Safe Movers
+                let phase2Units = []; // Lambs
+                let phase3Units = []; // Brawlers
+                let phase4Units = []; // Untouched Strikers
+                let finaleUnits = []; // Units with finale attacks
+
+                for (let u of allUnits) {
+                    let took = unitTookDamage.has(u);
+                    let dealt = unitDealtDamage.has(u) || unitDealtLendAid.has(u);
+                    let isFinale = unitFinaleAttacker.has(u);
+
+                    if (isFinale) finaleUnits.push(u);
+
+                    // Determine if unit ONLY deals finale damage (no regular combat damage)
+                    let dealtNonFinale = false;
+                    for (let d of allDamages) {
+                        if (d.attacker === u && d.source !== 'finale' && d.source !== 'movement') {
+                            dealtNonFinale = true;
+                            break;
+                        }
+                    }
+                    // For phase classification, "dealt" means dealt non-finale combat damage
+                    // or used lend aid. Finale-only attackers move in their classified phase
+                    // but damage is deferred to Finale.
+                    let dealtForPhase = dealtNonFinale || unitDealtLendAid.has(u);
+
+                    if (took && dealtForPhase) {
+                        phase3Units.push(u);
+                    } else if (took && !dealtForPhase) {
+                        phase2Units.push(u);
+                    } else if (!took && (dealtForPhase || isFinale)) {
+                        phase4Units.push(u);
+                    } else {
+                        phase1Units.push(u);
+                    }
+                }
+
+                // --- Build damage entries per phase ---
+                // Each damage event gets routed to the phase it should display in.
+                let moveMoveForUnit = (u) => moves.find(m => m.unit === u);
+
+                // Aggregate damages into display-ready format per unit
+                let buildDamageEntries = (dmgList) => {
+                    let dmgMap = new Map();
+                    for (let d of dmgList) {
+                        if (!dmgMap.has(d.unit)) dmgMap.set(d.unit, {
+                            unit: d.unit, amount: 0, kind: d.kind, hits: []
+                        });
+                        let e = dmgMap.get(d.unit);
+                        e.amount += d.amount;
+                        if (d.kind === 'dmg') e.kind = 'dmg';
+                        e.hits.push({
+                            amount: d.amount,
+                            attacker: d.attacker ? d.attacker.type : null,
+                            attackerPlayer: d.attacker ? d.attacker.player : null,
+                            attackerUnit: d.attacker || null,
+                            damageType: d.damageType,
+                            kind: d.kind,
+                            source: d.source
+                        });
+                    }
+                    let result = [];
+                    for (let e of dmgMap.values()) {
+                        let m = moveMoveForUnit(e.unit);
+                        let r = m ? m.endR : 0;
+                        let c = m ? m.endC : 0;
+                        result.push({
+                            r, c, amount: e.amount, kind: e.kind,
+                            unit: e.unit,
+                            targetType: e.unit.type,
+                            targetPlayer: e.unit.player,
+                            targetHp: e.unit.hp,
+                            targetMaxHp: e.unit.maxHp,
+                            dead: e.unit.hp <= 0,
+                            hits: e.hits
+                        });
+                    }
+                    return result;
+                };
+
+                // Route damage events to phases
+                let movementDmgs = allDamages.filter(d => d.source === 'movement');
+                let combatDmgs = allDamages.filter(d => d.source === 'combat');
+                let finaleDmgs = allDamages.filter(d => d.source === 'finale');
+                let attritionDmgs = allDamages.filter(d => d.source === 'attrition');
+
+                // Split combat damage: hits on Phase 2 (lambs) vs Phase 3 (brawlers) vs Phase 4
+                let phase2Set = new Set(phase2Units);
+                let phase3Set = new Set(phase3Units);
+                let phase4Set = new Set(phase4Units);
+
+                // Combat damage on lambs is shown when the attacker's phase plays
+                let combatOnLambs = combatDmgs.filter(d => phase2Set.has(d.unit));
+                let combatOnBrawlers = combatDmgs.filter(d => phase3Set.has(d.unit));
+                let combatFromBrawlersOnLambs = combatOnLambs.filter(d => phase3Set.has(d.attacker));
+                let combatFromStrikersOnLambs = combatOnLambs.filter(d => phase4Set.has(d.attacker));
+                let combatFromStrikers = combatDmgs.filter(d => phase4Set.has(d.attacker) && !phase2Set.has(d.unit));
+
+                // --- Build phase objects ---
+                let phases = [];
+
+                // PHASE 1: Safe Movers
+                let p1Moves = moves.filter(m => phase1Units.includes(m.unit));
+                let p1MovDmgs = movementDmgs.filter(d => phase1Units.includes(d.unit));
+                phases.push({
+                    id: 'safe_movers',
+                    label: 'Safe Movers',
+                    duration: 1500,
+                    moves: p1Moves,
+                    attacks: [],
+                    damages: buildDamageEntries(p1MovDmgs),
+                    units: phase1Units,
+                    empty: phase1Units.length === 0
+                });
+
+                // PHASE 2: Lambs (movement + danger glow, no damage yet)
+                let p2Moves = moves.filter(m => phase2Units.includes(m.unit));
+                let p2MovDmgs = movementDmgs.filter(d => phase2Units.includes(d.unit));
+                phases.push({
+                    id: 'lambs',
+                    label: 'Lambs',
+                    duration: Math.max(1200, phase2Units.length * 800),
+                    moves: p2Moves,
+                    attacks: [],
+                    damages: buildDamageEntries(p2MovDmgs), // only movement consequence damage (traps, etc)
+                    dangerUnits: phase2Units.filter(u => !unitTookMovementDmg.has(u) || u.hp > 0),
+                    units: phase2Units,
+                    empty: phase2Units.length === 0
+                });
+
+                // PHASE 3: Brawlers
+                let p3Moves = moves.filter(m => phase3Units.includes(m.unit));
+                let p3MovDmgs = movementDmgs.filter(d => phase3Units.includes(d.unit));
+                let p3Attacks = animAttacks.filter(a =>
+                    phase3Set.has(a.unit) && !(a.attack && (a.attack.rain || a.attack.shadow)));
+                // Combine: movement dmg on brawlers + brawler-on-lamb + brawler-on-brawler
+                let p3AllDmgs = [...p3MovDmgs, ...combatFromBrawlersOnLambs, ...combatOnBrawlers];
+
+                // Sort damages: non-lethal first, death blows last
+                let p3DmgEntries = buildDamageEntries(p3AllDmgs);
+                p3DmgEntries.sort((a, b) => {
+                    let aLethal = a.dead ? 1 : 0;
+                    let bLethal = b.dead ? 1 : 0;
+                    return aLethal - bLethal;
+                });
+
+                phases.push({
+                    id: 'brawlers',
+                    label: 'Brawlers',
+                    duration: Math.max(1500, phase3Units.length * 600 + p3DmgEntries.length * 400),
+                    moves: p3Moves,
+                    attacks: p3Attacks,
+                    damages: p3DmgEntries,
+                    units: phase3Units,
+                    empty: phase3Units.length === 0
+                });
+
+                // PHASE 4: Untouched Strikers
+                let p4Moves = moves.filter(m => phase4Units.includes(m.unit) && !finaleUnits.includes(m.unit));
+                // Include moves for finale units that are classified as phase4
+                let p4FinaleMoves = moves.filter(m => phase4Units.includes(m.unit) && finaleUnits.includes(m.unit));
+                let p4Attacks = animAttacks.filter(a =>
+                    phase4Set.has(a.unit) && !unitFinaleAttacker.has(a.unit));
+                let p4Dmgs = [...combatFromStrikersOnLambs, ...combatFromStrikers];
+                let p4DmgEntries = buildDamageEntries(p4Dmgs);
+                p4DmgEntries.sort((a, b) => (a.dead ? 1 : 0) - (b.dead ? 1 : 0));
+
+                phases.push({
+                    id: 'strikers',
+                    label: 'Untouched Strikers',
+                    duration: Math.max(1500, phase4Units.length * 1000),
+                    moves: [...p4Moves, ...p4FinaleMoves],
+                    attacks: p4Attacks,
+                    damages: p4DmgEntries,
+                    units: phase4Units,
+                    empty: phase4Units.length === 0 || (p4Attacks.length === 0 && !unitDealtLendAid.size)
+                });
+
+                // FINALE: Big dramatic hits
+                let finaleAttacks = animAttacks.filter(a => unitFinaleAttacker.has(a.unit));
+                // Also include rain/shadow attacks
+                let rainShadowAtks = animAttacks.filter(a =>
+                    a.attack && (a.attack.rain || a.attack.shadow));
+                let allFinaleAtks = [...finaleAttacks, ...rainShadowAtks];
+                // Remove duplicates
+                let finaleAtkSet = new Set(allFinaleAtks);
+                allFinaleAtks = [...finaleAtkSet];
+
+                let finaleDmgEntries = buildDamageEntries(finaleDmgs);
+                // Sort by total damage ascending (biggest hit last)
+                finaleDmgEntries.sort((a, b) => {
+                    // Shadow strike (instant kill) always last
+                    let aInsta = a.hits.some(h => h.attacker === 'Assassin' && h.amount >= 10);
+                    let bInsta = b.hits.some(h => h.attacker === 'Assassin' && h.amount >= 10);
+                    if (aInsta !== bInsta) return aInsta ? 1 : -1;
+                    return a.amount - b.amount;
+                });
+
+                phases.push({
+                    id: 'finale',
+                    label: 'Finale',
+                    duration: Math.max(1500, allFinaleAtks.length * 1200),
+                    moves: [], // Finale units already moved in earlier phases
+                    attacks: allFinaleAtks,
+                    damages: finaleDmgEntries,
+                    units: finaleUnits,
+                    empty: finaleUnits.length === 0
+                });
+
+                // THE WEAVER: Attrition (turn 10+)
+                let weaverDmgEntries = buildDamageEntries(attritionDmgs);
+                if (attritionDmgs.length > 0) {
+                    phases.push({
+                        id: 'weaver',
+                        label: 'The Weaver',
+                        duration: 2000,
+                        moves: [],
+                        attacks: [],
+                        damages: weaverDmgEntries,
+                        units: allUnits.filter(u => u.hp > 0 || attritionDmgs.some(d => d.unit === u)),
+                        empty: false
+                    });
+                }
+
+                // --- Compute total duration and build the animation object ---
+                let interPhaseDelay = this.animSpeedSettings ? this.animSpeedSettings.delay : 2000;
+                let speedMul = this.animSpeedSettings ? this.animSpeedSettings.speed : 1.0;
+
+                // Filter out empty phases for timing but keep them for heartbeat
+                let activePhases = phases.filter(p => !p.empty);
+                let totalDuration = 0;
+                for (let p of phases) {
+                    if (p.empty) {
+                        totalDuration += 400; // heartbeat duration
+                    } else {
+                        totalDuration += p.duration + interPhaseDelay;
+                    }
+                }
+
                 this.animation = {
+                    phased: true, // flag to distinguish from legacy flat animation
                     startTime: performance.now(),
-                    // Bumped to 3000ms so the 2-second float-up has time to
-                    // complete after the attack window ends at ~1870ms.
-                    duration: 3000,
-                    moves,
-                    attacks: animAttacks,
+                    totalDuration,
+                    phases,
+                    currentPhaseIndex: 0,
+                    phaseStartTime: performance.now(),
+                    interPhaseDelay,
+                    speedMultiplier: speedMul,
+                    inDelay: false,
+                    // Full data for reference/fallback
+                    allMoves: moves,
+                    allAttacks: animAttacks,
+                    allDamages: buildDamageEntries(allDamages),
                     deadUnits,
-                    damages,
+                    origPos,
                     combatLog: [...this.combatLog],
-                    preActionSnapshot: this._preActionSnapshot || []
+                    preActionSnapshot: this._preActionSnapshot || [],
+                    paused: false,
+                    // Track near-death state: units at 0hp that still need to show
+                    nearDeathUnits: new Set(deadUnits.filter(u =>
+                        !unitTookMovementDmg.has(u) || allDamages.filter(d => d.unit === u && d.source === 'movement').reduce((s,d) => s + d.amount, 0) < u.maxHp
+                    ))
                 };
 
                 // Populate the combat log div
@@ -3580,6 +3853,72 @@
                     }
                     this.ctx.textBaseline = 'alphabetic';
                 }
+
+                // ===== STACKING BUFF RUNES =====
+                // Glowing rune above the unit that morphs with stack count.
+                // Visible to both players. More prominent than synergy badges.
+                if (u.type === 'Archer' && u.accuracyStack > 0) {
+                    let stacks = Math.min(3, u.accuracyStack);
+                    let pulse = 0.6 + 0.4 * Math.sin(performance.now() / 400);
+                    let runeY = sy - 8 - stacks * 2;
+                    let intensity = 0.4 + stacks * 0.2;
+                    let runeColor = stacks >= 3 ? `rgba(255,255,240,${intensity * pulse})`
+                        : stacks >= 2 ? `rgba(255,220,120,${intensity * pulse})`
+                        : `rgba(200,160,80,${intensity * pulse})`;
+                    // Crosshair/eye rune
+                    this.ctx.save();
+                    this.ctx.strokeStyle = runeColor;
+                    this.ctx.lineWidth = 1.5 + stacks * 0.5;
+                    // Outer ring
+                    this.ctx.beginPath();
+                    this.ctx.arc(cx, runeY, 6 + stacks, 0, Math.PI * 2);
+                    this.ctx.stroke();
+                    // Crosshair lines
+                    let cr = 6 + stacks;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(cx - cr, runeY); this.ctx.lineTo(cx + cr, runeY);
+                    this.ctx.moveTo(cx, runeY - cr); this.ctx.lineTo(cx, runeY + cr);
+                    this.ctx.stroke();
+                    // Inner dot (grows with stacks)
+                    if (stacks >= 2) {
+                        this.ctx.fillStyle = runeColor;
+                        this.ctx.beginPath();
+                        this.ctx.arc(cx, runeY, 2 + (stacks - 2), 0, Math.PI * 2);
+                        this.ctx.fill();
+                    }
+                    this.ctx.restore();
+                }
+                if (u.type === 'Adept' && u.focusChannelStack > 0) {
+                    let stacks = Math.min(5, u.focusChannelStack);
+                    let pulse = 0.6 + 0.4 * Math.sin(performance.now() / 350);
+                    let runeY = sy - 8 - stacks;
+                    let intensity = 0.35 + stacks * 0.12;
+                    let runeColor = stacks >= 4 ? `rgba(220,180,255,${intensity * pulse})`
+                        : stacks >= 2 ? `rgba(180,140,255,${intensity * pulse})`
+                        : `rgba(140,100,200,${intensity * pulse})`;
+                    // Spiral/flame rune
+                    this.ctx.save();
+                    this.ctx.strokeStyle = runeColor;
+                    this.ctx.lineWidth = 1.2 + stacks * 0.3;
+                    // Spiral arc
+                    let spR = 5 + stacks;
+                    let arcStart = performance.now() / 800;
+                    this.ctx.beginPath();
+                    this.ctx.arc(cx, runeY, spR, arcStart, arcStart + Math.PI * (1 + stacks * 0.3));
+                    this.ctx.stroke();
+                    // Inner spiral
+                    if (stacks >= 2) {
+                        this.ctx.beginPath();
+                        this.ctx.arc(cx, runeY, spR * 0.5, arcStart + Math.PI, arcStart + Math.PI * (1.5 + stacks * 0.2));
+                        this.ctx.stroke();
+                    }
+                    // Center glow
+                    this.ctx.fillStyle = runeColor;
+                    this.ctx.beginPath();
+                    this.ctx.arc(cx, runeY, 2, 0, Math.PI * 2);
+                    this.ctx.fill();
+                    this.ctx.restore();
+                }
             }
 
             drawBoard(game) {
@@ -4063,6 +4402,410 @@
                 this.ctx.restore();
             }
 
+            // ============================================================
+            // PHASED ANIMATION RENDERER
+            // Plays resolution results in cinematic phases:
+            // Phase 1 (Safe Movers) → Phase 2 (Lambs) → Phase 3 (Brawlers)
+            // → Phase 4 (Strikers) → Finale → The Weaver
+            // ============================================================
+            drawPhasedAnim(game) {
+                let anim = game.animation;
+                let phase = anim.phases[anim.currentPhaseIndex];
+                if (!phase) return;
+
+                let elapsed = performance.now() - anim.phaseStartTime;
+                let speed = anim.speedMultiplier || 1;
+                let phaseDur = (phase.empty ? 400 : phase.duration) / speed;
+
+                // --- INTER-PHASE DELAY (gap between phases) ---
+                if (anim.inDelay) {
+                    // Draw all units at their current resolved positions
+                    this.drawPhasedUnitsAtRest(anim);
+                    // Draw a subtle phase transition indicator
+                    let delayDur = anim.interPhaseDelay / speed;
+                    let delayT = Math.min(1, elapsed / delayDur);
+                    // Fade bar or subtle divider between phases
+                    let nextPhase = anim.phases[anim.currentPhaseIndex + 1];
+                    if (nextPhase && !nextPhase.empty) {
+                        let alpha = Math.sin(delayT * Math.PI) * 0.3;
+                        this.ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+                        this.ctx.fillRect(0, CANVAS_H / 2 - 1, CANVAS_W, 2);
+                    }
+                    return;
+                }
+
+                // --- EMPTY PHASE: heartbeat visual ---
+                if (phase.empty) {
+                    this.drawPhasedUnitsAtRest(anim);
+                    // Double-beat heartbeat pulse
+                    let ht = elapsed / (400 / speed);
+                    let beat1 = ht < 0.3 ? Math.sin(ht / 0.3 * Math.PI) : 0;
+                    let beat2 = (ht > 0.5 && ht < 0.8) ? Math.sin((ht - 0.5) / 0.3 * Math.PI) : 0;
+                    let pulse = Math.max(beat1, beat2);
+                    if (pulse > 0.01) {
+                        // Screen-edge vignette throb
+                        let grad = this.ctx.createRadialGradient(
+                            CANVAS_W/2, CANVAS_H/2, CANVAS_W * 0.3,
+                            CANVAS_W/2, CANVAS_H/2, CANVAS_W * 0.7);
+                        grad.addColorStop(0, 'rgba(0,0,0,0)');
+                        grad.addColorStop(1, `rgba(60,40,80,${pulse * 0.25})`);
+                        this.ctx.fillStyle = grad;
+                        this.ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+                    }
+                    return;
+                }
+
+                // --- ACTIVE PHASE RENDERING ---
+                let phaseT = Math.min(1, elapsed / phaseDur);
+
+                // Determine movement and attack windows within the phase
+                let moveDuration = phase.moves.length > 0 ? 0.5 : 0;
+                let attackStart = moveDuration;
+                let attackDuration = phase.attacks.length > 0 || phase.damages.length > 0 ? 0.4 : 0;
+                // Scale if no movement or no attacks
+                if (moveDuration === 0 && attackDuration > 0) { attackStart = 0.1; }
+
+                let moveT = moveDuration > 0 ? Math.min(1, phaseT / moveDuration) : 1;
+                let easedMoveT = moveT < 0.5
+                    ? 4 * moveT * moveT * moveT
+                    : 1 - Math.pow(-2 * moveT + 2, 3) / 2;
+
+                let inAttackWindow = phaseT >= attackStart && phaseT < (attackStart + attackDuration);
+                let attackLocalT = inAttackWindow ? (phaseT - attackStart) / attackDuration : 0;
+
+                // --- Draw all units ---
+                // Units in THIS phase: interpolate position
+                // Units in EARLIER phases: at their final positions
+                // Units in LATER phases: at their starting positions
+                let drawList = [];
+                for (let m of anim.allMoves) {
+                    let unitPhaseIdx = this.getUnitPhaseIndex(m.unit, anim);
+                    let ar, ac, alpha = 1;
+
+                    if (unitPhaseIdx < anim.currentPhaseIndex) {
+                        // Earlier phase — unit is at final position
+                        ar = m.endR;
+                        ac = m.endC;
+                    } else if (unitPhaseIdx > anim.currentPhaseIndex) {
+                        // Later phase — unit is at start position
+                        ar = m.startR;
+                        ac = m.startC;
+                    } else {
+                        // THIS phase — interpolate
+                        if (m.blinked) {
+                            if (moveT < 0.4) { ar = m.startR; ac = m.startC; alpha = 1 - moveT/0.4; }
+                            else if (moveT < 0.6) { ar = m.endR; ac = m.endC; alpha = 0; }
+                            else { ar = m.endR; ac = m.endC; alpha = (moveT - 0.6) / 0.4; }
+                        } else {
+                            ar = m.startR + (m.endR - m.startR) * easedMoveT;
+                            ac = m.startC + (m.endC - m.startC) * easedMoveT;
+                        }
+                    }
+
+                    // Near-death visual: unit at 0 HP but not yet shown dying
+                    let isNearDeath = !m.alive && anim.nearDeathUnits && anim.nearDeathUnits.has(m.unit);
+                    // Check if this unit should show death in this phase
+                    let showDeath = !m.alive && !isNearDeath && unitPhaseIdx <= anim.currentPhaseIndex;
+
+                    // Danger glow for Phase 2 lambs
+                    let isDangerGlow = false;
+                    if (phase.id === 'lambs' && phase.dangerUnits && phase.dangerUnits.includes(m.unit)) {
+                        if (moveT >= 0.8) isDangerGlow = true;
+                    }
+                    // Also show danger glow for lambs in later phases (persistent)
+                    if (anim.currentPhaseIndex > 1 && phase.dangerUnits) {
+                        let lambPhase = anim.phases.find(p => p.id === 'lambs');
+                        if (lambPhase && lambPhase.dangerUnits && lambPhase.dangerUnits.includes(m.unit)) {
+                            isDangerGlow = true;
+                        }
+                    }
+
+                    drawList.push({
+                        unit: m.unit, ar, ac, alive: m.alive, alpha,
+                        startR: m.startR, startC: m.startC, endR: m.endR, endC: m.endC,
+                        blinked: m.blinked, isNearDeath, showDeath, isDangerGlow,
+                        unitPhaseIdx
+                    });
+                }
+
+                // Sort by isometric depth (painter's order)
+                drawList.sort((a, b) => (a.ar + a.ac) - (b.ar + b.ac));
+
+                // --- Draw movement trails for units moving in THIS phase ---
+                for (let d of drawList) {
+                    if (d.unitPhaseIdx !== anim.currentPhaseIndex) continue;
+                    if (d.startR === d.endR && d.startC === d.endC) continue;
+                    if (d.blinked) continue;
+                    let [sx, sy] = this.isoCenter(d.startR, d.startC);
+                    let [ex, ey] = this.isoCenter(d.endR, d.endC);
+                    let color = d.unit.player === 1 ? 'rgba(80,140,255,' : 'rgba(255,80,80,';
+                    let trailAlpha = Math.min(1, moveT * 1.5);
+                    this.ctx.save();
+                    this.ctx.strokeStyle = color + (trailAlpha * 0.5) + ')';
+                    this.ctx.lineWidth = 3;
+                    this.ctx.setLineDash([6, 4]);
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(sx, sy - 15);
+                    this.ctx.lineTo(ex, ey - 15);
+                    this.ctx.stroke();
+                    this.ctx.fillStyle = color + (trailAlpha * 0.4) + ')';
+                    this.ctx.setLineDash([]);
+                    this.ctx.beginPath();
+                    this.ctx.arc(sx, sy - 15, 4, 0, Math.PI * 2);
+                    this.ctx.fill();
+                    this.ctx.restore();
+                }
+
+                // --- Draw units ---
+                for (let d of drawList) {
+                    let unitAlpha = d.alpha;
+                    if (d.showDeath) {
+                        // Death fade — determine how far into death we are
+                        let deathT = Math.max(0, (phaseT - 0.7) / 0.3);
+                        unitAlpha *= (1 - deathT);
+                    }
+                    if (unitAlpha <= 0.01) continue;
+
+                    let ao = {};
+
+                    // Movement lean (for units moving in this phase)
+                    if (d.unitPhaseIdx === anim.currentPhaseIndex &&
+                        (d.startR !== d.endR || d.startC !== d.endC)) {
+                        let moveDR = d.endR - d.startR, moveDC = d.endC - d.startC;
+                        let leanDir = moveDC - moveDR;
+                        let leanAmount = leanDir > 0 ? 0.12 : leanDir < 0 ? -0.12 : 0;
+                        let leanT = moveT < 1 ? Math.sin(moveT * Math.PI) : 0;
+                        ao.rotate = leanAmount * leanT;
+                    }
+
+                    // Charge gallop
+                    if ((d.unit.type === 'Knight' || d.unit.type === 'Paladin') &&
+                        d.unitPhaseIdx === anim.currentPhaseIndex) {
+                        let dist = Math.abs(d.endR - d.startR) + Math.abs(d.endC - d.startC);
+                        if (dist === 2 && moveT < 1) {
+                            ao.offsetY = -Math.abs(Math.sin(moveT * 2 * Math.PI * 2)) * 6;
+                        }
+                    }
+
+                    // Near-death stagger
+                    if (d.isNearDeath) {
+                        let wobble = Math.sin(performance.now() / 120) * 0.15;
+                        ao.rotate = (ao.rotate || 0) + wobble;
+                        ao.offsetX = Math.sin(performance.now() / 90) * 2;
+                        unitAlpha *= 0.7 + 0.3 * Math.sin(performance.now() / 200);
+                    }
+
+                    // Hit recoil (for units taking damage in this phase)
+                    if (inAttackWindow && phase.damages) {
+                        let wasDamaged = phase.damages.some(dm =>
+                            dm.unit === d.unit || (dm.r === d.endR && dm.c === d.endC));
+                        if (wasDamaged) {
+                            let shakePhase = attackLocalT * Math.PI * 6;
+                            let shakeDecay = 1 - attackLocalT;
+                            ao.offsetX = (ao.offsetX || 0) + Math.sin(shakePhase) * 4 * shakeDecay;
+                        }
+                    }
+
+                    // Death topple
+                    if (d.showDeath) {
+                        let deathT = Math.max(0, (phaseT - 0.7) / 0.3);
+                        let toppleDir = d.unit.player === 1 ? 1 : -1;
+                        ao.rotate = (ao.rotate || 0) + toppleDir * deathT * 0.8;
+                        ao.scaleX = 1 - deathT * 0.3;
+                        ao.scaleY = 1 - deathT * 0.3;
+                    }
+
+                    // Danger glow
+                    if (d.isDangerGlow) {
+                        let [gx, gy] = this.isoCenter(d.ar, d.ac);
+                        let glowPulse = 0.5 + 0.5 * Math.sin(performance.now() / 300);
+                        this.ctx.save();
+                        this.ctx.fillStyle = `rgba(255, 60, 60, ${0.15 + 0.1 * glowPulse})`;
+                        this.ctx.beginPath();
+                        this.ctx.ellipse(gx, gy, 24, 12, 0, 0, Math.PI * 2);
+                        this.ctx.fill();
+                        this.ctx.restore();
+                    }
+
+                    this.ctx.globalAlpha = unitAlpha;
+                    this.drawUnit(d.unit, false, [d.ar, d.ac], ao);
+                    this.ctx.globalAlpha = 1;
+                }
+
+                // --- Blink sparkles ---
+                for (let d of drawList) {
+                    if (!d.blinked || d.unitPhaseIdx !== anim.currentPhaseIndex) continue;
+                    let blinkPhase = moveT < 0.5 ? (moveT / 0.5) : ((moveT - 0.5) / 0.5);
+                    let pulse = Math.sin(blinkPhase * Math.PI);
+                    if (pulse <= 0.01) continue;
+                    let [r0, c0] = moveT < 0.5 ? [d.startR, d.startC] : [d.endR, d.endC];
+                    let [bx, by] = this.isoCenter(r0, c0);
+                    by -= 18;
+                    this.ctx.fillStyle = `rgba(140, 200, 255, ${pulse * 0.6})`;
+                    this.ctx.beginPath();
+                    this.ctx.ellipse(bx, by + 18, 20, 14, 0, 0, Math.PI * 2);
+                    this.ctx.fill();
+                    this.ctx.fillStyle = `rgba(220, 240, 255, ${pulse})`;
+                    this.ctx.font = `${Math.round(20 + pulse * 12)}px serif`;
+                    this.ctx.textAlign = 'center';
+                    this.ctx.textBaseline = 'middle';
+                    this.ctx.fillText('\u2726', bx, by);
+                }
+
+                // --- Attack effects ---
+                if (inAttackWindow && phase.attacks && phase.attacks.length > 0) {
+                    let flashA = Math.sin(attackLocalT * Math.PI);
+                    this.drawAttackEffects(game, { attacks: phase.attacks }, flashA);
+                }
+
+                // --- Floating damage numbers ---
+                if (phase.damages && phase.damages.length > 0) {
+                    let dmgStart = attackStart > 0 ? attackStart : 0.3;
+                    let dmgT = Math.max(0, (phaseT - dmgStart) / (1 - dmgStart));
+                    if (dmgT > 0) {
+                        for (let i = 0; i < phase.damages.length; i++) {
+                            let d = phase.damages[i];
+                            // Stagger each damage entry slightly
+                            let stagger = i * 0.1;
+                            let localT = Math.max(0, Math.min(1, (dmgT - stagger) / (1 - stagger)));
+                            if (localT <= 0) continue;
+                            let eased = 1 - Math.pow(1 - localT, 2);
+                            let alpha = localT < 0.6 ? 1 : Math.max(0, 1 - (localT - 0.6) / 0.4);
+                            let [dx, dy] = this.isoCenter(d.r, d.c);
+                            dy -= 22;
+                            dy -= 38 * eased;
+
+                            // Cascading damage numbers for stacked hits
+                            if (d.hits && d.hits.length > 1) {
+                                for (let hi = 0; hi < d.hits.length; hi++) {
+                                    let hitDelay = hi * 0.15;
+                                    let hitT = Math.max(0, Math.min(1, (localT - hitDelay) / (1 - hitDelay)));
+                                    if (hitT <= 0) continue;
+                                    let hitEased = 1 - Math.pow(1 - hitT, 2);
+                                    let hitAlpha = hitT < 0.6 ? 1 : Math.max(0, 1 - (hitT - 0.6) / 0.4);
+                                    let hy = dy - hi * 18 * hitEased;
+                                    let hx = dx + (hi % 2 === 0 ? -8 : 8) * (hi > 0 ? 1 : 0);
+                                    let fill = d.hits[hi].kind === 'cull' ? '#ff6a6a' : '#ffd84a';
+                                    let txt = '-' + d.hits[hi].amount;
+                                    this.ctx.save();
+                                    this.ctx.globalAlpha = hitAlpha * alpha;
+                                    this.ctx.font = 'bold 18px Arial';
+                                    this.ctx.textAlign = 'center';
+                                    this.ctx.textBaseline = 'middle';
+                                    this.ctx.lineWidth = 3;
+                                    this.ctx.strokeStyle = '#000';
+                                    this.ctx.strokeText(txt, hx, hy);
+                                    this.ctx.fillStyle = fill;
+                                    this.ctx.fillText(txt, hx, hy);
+                                    this.ctx.restore();
+                                }
+                            } else {
+                                let fill = d.kind === 'cull' ? '#ff6a6a' : '#ffd84a';
+                                let txt = '-' + d.amount;
+                                this.ctx.save();
+                                this.ctx.globalAlpha = alpha;
+                                this.ctx.font = 'bold 20px Arial';
+                                this.ctx.textAlign = 'center';
+                                this.ctx.textBaseline = 'middle';
+                                this.ctx.lineWidth = 4;
+                                this.ctx.strokeStyle = '#000';
+                                this.ctx.strokeText(txt, dx, dy);
+                                this.ctx.fillStyle = fill;
+                                this.ctx.fillText(txt, dx, dy);
+                                this.ctx.restore();
+                            }
+                        }
+                    }
+                }
+
+                // --- Phase label overlay ---
+                if (phaseT < 0.2 && !phase.empty) {
+                    let labelAlpha = 1 - phaseT / 0.2;
+                    this.ctx.save();
+                    this.ctx.globalAlpha = labelAlpha * 0.7;
+                    this.ctx.font = 'bold 16px Arial';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillStyle = '#fff';
+                    let labelText = phase.label;
+                    if (phase.id === 'finale') labelText = '~ FINALE ~';
+                    if (phase.id === 'weaver') labelText = '~ The Weaver ~';
+                    this.ctx.fillText(labelText, CANVAS_W / 2, 30);
+                    this.ctx.restore();
+                }
+
+                // --- Paused state (end of all phases) ---
+                if (anim.paused) {
+                    this.drawPhasedUnitsAtRest(anim);
+                    // Show all damage markers
+                    if (anim.allDamages && anim.allDamages.length) {
+                        for (let d of anim.allDamages) {
+                            let [dx, dy] = this.isoCenter(d.r, d.c);
+                            dy -= 60;
+                            let fill = d.kind === 'cull' ? '#ff6a6a' : '#ffd84a';
+                            let txt = '-' + d.amount;
+                            this.ctx.save();
+                            this.ctx.font = 'bold 20px Arial';
+                            this.ctx.textAlign = 'center';
+                            this.ctx.textBaseline = 'middle';
+                            this.ctx.lineWidth = 4;
+                            this.ctx.strokeStyle = '#000';
+                            this.ctx.strokeText(txt, dx, dy);
+                            this.ctx.fillStyle = fill;
+                            this.ctx.fillText(txt, dx, dy);
+                            this.ctx.restore();
+                        }
+                    }
+                    this.ctx.save();
+                    this.ctx.fillStyle = 'rgba(200,200,200,0.8)';
+                    this.ctx.font = '13px Arial';
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillText('Click or press any key to continue', CANVAS_W / 2, CANVAS_H - 12);
+                    this.ctx.restore();
+                }
+            }
+
+            // Helper: determine which phase index a unit belongs to
+            getUnitPhaseIndex(unit, anim) {
+                for (let i = 0; i < anim.phases.length; i++) {
+                    if (anim.phases[i].units && anim.phases[i].units.includes(unit)) return i;
+                }
+                return 0; // default to phase 1
+            }
+
+            // Helper: draw all units at their final/start positions (for pauses/delays)
+            drawPhasedUnitsAtRest(anim) {
+                let drawList = [];
+                for (let m of anim.allMoves) {
+                    let unitPhaseIdx = this.getUnitPhaseIndex(m.unit, anim);
+                    let ar, ac;
+                    if (unitPhaseIdx <= anim.currentPhaseIndex) {
+                        ar = m.endR;
+                        ac = m.endC;
+                    } else {
+                        ar = m.startR;
+                        ac = m.startC;
+                    }
+                    let isNearDeath = !m.alive && anim.nearDeathUnits && anim.nearDeathUnits.has(m.unit);
+                    let showDeath = !m.alive && !isNearDeath && unitPhaseIdx <= anim.currentPhaseIndex;
+                    if (showDeath) continue; // Don't draw dead units
+                    drawList.push({ unit: m.unit, ar, ac, isNearDeath });
+                }
+                drawList.sort((a, b) => (a.ar + a.ac) - (b.ar + b.ac));
+                for (let d of drawList) {
+                    let ao = {};
+                    let alpha = 1;
+                    if (d.isNearDeath) {
+                        let wobble = Math.sin(performance.now() / 120) * 0.15;
+                        ao.rotate = wobble;
+                        ao.offsetX = Math.sin(performance.now() / 90) * 2;
+                        alpha = 0.7 + 0.3 * Math.sin(performance.now() / 200);
+                    }
+                    this.ctx.globalAlpha = alpha;
+                    this.drawUnit(d.unit, false, [d.ar, d.ac], ao);
+                    this.ctx.globalAlpha = 1;
+                }
+            }
+
             // Animate movements + attacks during ACTION_RESOLVE phase.
             // Timeline over anim.duration (2.2s):
             //   0.00-0.50: units slide from start → end (ease-in-out)
@@ -4070,6 +4813,12 @@
             //   0.85-1.00: hold final state
             drawActionAnim(game) {
                 let anim = game.animation;
+                // --- PHASED ANIMATION SYSTEM ---
+                if (anim.phased) {
+                    this.drawPhasedAnim(game);
+                    return;
+                }
+                // --- LEGACY FLAT ANIMATION (AI-vs-AI fallback) ---
                 let elapsed = performance.now() - anim.startTime;
                 let t = Math.min(1, elapsed / anim.duration);
 
@@ -4840,7 +5589,9 @@
                         this.ctx.fillText('⚔  Battle resolving...  ⚔', CANVAS_W / 2, UI_TOP + 60);
                         if (game.animation) {
                             let elapsed = performance.now() - game.animation.startTime;
-                            let pct = Math.min(1, elapsed / game.animation.duration);
+                            let pct = game.animation.phased
+                                ? Math.min(1, game.animation.currentPhaseIndex / Math.max(1, game.animation.phases.length))
+                                : Math.min(1, elapsed / game.animation.duration);
                             let barX = CANVAS_W / 2 - 180, barY = UI_TOP + 100, barW = 360, barH = 18;
                             this.ctx.fillStyle = '#2a2a2a';
                             this.ctx.fillRect(barX, barY, barW, barH);
@@ -10635,13 +11386,65 @@
             // After the animation finishes, pause to let the player inspect
             // damage markers. Click or press any key to continue.
             if (game.phase === 'ACTION_RESOLVE' && game.animation) {
-                let elapsed = performance.now() - game.animation.startTime;
-                if (elapsed >= game.animation.duration && !game.animation.paused) {
-                    if (game.animation.damages && game.animation.damages.length > 0) {
-                        game.animation.paused = true;
-                    } else {
-                        game.animation = null;
-                        game.nextPhase();
+                let anim = game.animation;
+                if (anim.phased) {
+                    // --- PHASED ANIMATION PROGRESSION ---
+                    if (!anim.paused) {
+                        let elapsed = performance.now() - anim.phaseStartTime;
+                        let speed = anim.speedMultiplier || 1;
+                        let phase = anim.phases[anim.currentPhaseIndex];
+
+                        if (anim.inDelay) {
+                            let delayDur = anim.interPhaseDelay / speed;
+                            if (elapsed >= delayDur) {
+                                anim.inDelay = false;
+                                anim.currentPhaseIndex++;
+                                if (anim.currentPhaseIndex >= anim.phases.length) {
+                                    // All phases done — pause for inspection
+                                    if (anim.allDamages && anim.allDamages.length > 0) {
+                                        anim.paused = true;
+                                    } else {
+                                        game.animation = null;
+                                        game.nextPhase();
+                                    }
+                                } else {
+                                    anim.phaseStartTime = performance.now();
+                                }
+                            }
+                        } else if (phase) {
+                            let phaseDur = (phase.empty ? 400 : phase.duration) / speed;
+                            if (elapsed >= phaseDur) {
+                                // Phase complete — enter inter-phase delay
+                                // Skip delay for empty phases
+                                if (phase.empty) {
+                                    anim.currentPhaseIndex++;
+                                    if (anim.currentPhaseIndex >= anim.phases.length) {
+                                        if (anim.allDamages && anim.allDamages.length > 0) {
+                                            anim.paused = true;
+                                        } else {
+                                            game.animation = null;
+                                            game.nextPhase();
+                                        }
+                                    } else {
+                                        anim.phaseStartTime = performance.now();
+                                    }
+                                } else {
+                                    anim.inDelay = true;
+                                    anim.phaseStartTime = performance.now();
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // --- LEGACY FLAT ANIMATION ---
+                    let elapsed = performance.now() - anim.startTime;
+                    if (elapsed >= anim.duration && !anim.paused) {
+                        if (anim.damages && anim.damages.length > 0) {
+                            anim.paused = true;
+                        } else {
+                            game.animation = null;
+                            game.nextPhase();
+                        }
                     }
                 }
             }
