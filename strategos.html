@@ -2495,7 +2495,8 @@
                         startC: orig.c,
                         endR, endC,
                         alive,
-                        blinked
+                        blinked,
+                        delayInPhase: 0
                     });
                 }
 
@@ -2563,6 +2564,59 @@
                     } else {
                         phase1Units.push(u);
                     }
+                }
+
+                // --- BUMP REDIRECT ---
+                // When a Knight charges and bumps a defender aside, the
+                // defender's "slide aside" animation should play AFTER the
+                // charging unit makes contact — not in the defender's own
+                // classified phase, which often plays earlier. We detect
+                // bumped/forcibly-moved units by comparing their final tile
+                // to their PRE-ACTION planned destination. If they differ,
+                // the unit was bumped, bounced, or otherwise displaced.
+                // We then find the "bumper" (the unit on their intended
+                // tile) and redirect the bumped unit's effective phase to
+                // match the bumper's phase, with a delay so the bumper
+                // visually arrives first.
+                let bumpedRedirect = new Map(); // unit -> {phaseIdx, delay}
+                let snap = this._preActionSnapshot || [];
+                for (let i = 0; i < allUnits.length; i++) {
+                    let u = allUnits[i];
+                    let s = snap[i];
+                    if (!s) continue;
+                    let intendedR = s.plannedR != null ? s.plannedR : s.r;
+                    let intendedC = s.plannedC != null ? s.plannedC : s.c;
+                    let finalR = u.hp > 0 ? u.r : (u.plannedR != null ? u.plannedR : s.r);
+                    let finalC = u.hp > 0 ? u.c : (u.plannedC != null ? u.plannedC : s.c);
+                    if (finalR === intendedR && finalC === intendedC) continue;
+                    // u was displaced. Find a bumper: the unit whose final
+                    // position is u's intended tile (i.e., the unit who took
+                    // the tile u meant to occupy / was sitting on).
+                    let bumper = null;
+                    for (let v of allUnits) {
+                        if (v === u) continue;
+                        if (v.hp <= 0) continue;
+                        if (v.r === intendedR && v.c === intendedC) {
+                            bumper = v;
+                            break;
+                        }
+                    }
+                    if (!bumper) continue;
+                    // Get bumper's phase index from the four classified phases.
+                    let bumperPhaseIdx = -1;
+                    if (phase1Units.includes(bumper)) bumperPhaseIdx = 0;
+                    else if (phase2Units.includes(bumper)) bumperPhaseIdx = 1;
+                    else if (phase3Units.includes(bumper)) bumperPhaseIdx = 2;
+                    else if (phase4Units.includes(bumper)) bumperPhaseIdx = 3;
+                    if (bumperPhaseIdx < 0) continue;
+                    // Only redirect if it's a forward shift (bumper plays
+                    // later than the bumped unit's classified phase).
+                    let bumpedClassifiedIdx = phase1Units.includes(u) ? 0
+                        : phase2Units.includes(u) ? 1
+                        : phase3Units.includes(u) ? 2
+                        : phase4Units.includes(u) ? 3 : -1;
+                    if (bumpedClassifiedIdx >= bumperPhaseIdx) continue;
+                    bumpedRedirect.set(u, {phaseIdx: bumperPhaseIdx, delay: 0.45});
                 }
 
                 // --- Build damage entries per phase ---
@@ -2767,6 +2821,12 @@
                     }
                 }
 
+                // Apply bump-redirect delay to each redirected unit's move.
+                for (let [u, info] of bumpedRedirect) {
+                    let m = moves.find(mv => mv.unit === u);
+                    if (m) m.delayInPhase = info.delay;
+                }
+
                 this.animation = {
                     phased: true, // flag to distinguish from legacy flat animation
                     startTime: performance.now(),
@@ -2777,6 +2837,7 @@
                     interPhaseDelay,
                     speedMultiplier: speedMul,
                     inDelay: false,
+                    bumpedRedirect, // unit -> {phaseIdx, delay}
                     // Full data for reference/fallback
                     allMoves: moves,
                     allAttacks: animAttacks,
@@ -4670,8 +4731,18 @@
                             else if (moveT < 0.6) { ar = m.endR; ac = m.endC; alpha = 0; }
                             else { ar = m.endR; ac = m.endC; alpha = (moveT - 0.6) / 0.4; }
                         } else {
-                            ar = m.startR + (m.endR - m.startR) * easedMoveT;
-                            ac = m.startC + (m.endC - m.startC) * easedMoveT;
+                            // Per-move delay support: bumped units start moving
+                            // partway through the phase so the bumper visually
+                            // makes contact first.
+                            let myMoveT = moveT;
+                            if (m.delayInPhase && m.delayInPhase > 0) {
+                                myMoveT = Math.max(0, (moveT - m.delayInPhase) / (1 - m.delayInPhase));
+                            }
+                            let myEased = myMoveT < 0.5
+                                ? 4 * myMoveT * myMoveT * myMoveT
+                                : 1 - Math.pow(-2 * myMoveT + 2, 3) / 2;
+                            ar = m.startR + (m.endR - m.startR) * myEased;
+                            ac = m.startC + (m.endC - m.startC) * myEased;
                         }
                     }
 
@@ -4939,6 +5010,11 @@
 
             // Helper: determine which phase index a unit belongs to
             getUnitPhaseIndex(unit, anim) {
+                // Bumped units animate alongside their bumper, not in their
+                // own classified phase — see buildAnimationFromResolution.
+                if (anim.bumpedRedirect && anim.bumpedRedirect.has(unit)) {
+                    return anim.bumpedRedirect.get(unit).phaseIdx;
+                }
                 for (let i = 0; i < anim.phases.length; i++) {
                     if (anim.phases[i].units && anim.phases[i].units.includes(unit)) return i;
                 }
