@@ -104,7 +104,7 @@
             Squire:   {hp:12, mov:1, cost:1, weight:3, rng:1, tileTarget:false, blocks:true,  firebolt:false, diag_move:false, diag_atk:false, cleave:0, atk_type:'Melee',    atk:{P:1,Me:5,Ex:1,Ma:1}, dfn:{P:4,Me:5,Ex:3,Ma:2}},
             Knight:   {hp:22, mov:2, cost:2, weight:3, rng:1, tileTarget:false, blocks:true,  firebolt:false, diag_move:false, diag_atk:true,  cleave:1, atk_type:'Melee',    atk:{P:2,Me:8,Ex:1,Ma:1}, dfn:{P:7,Me:6,Ex:5,Ma:3}},
             Paladin:  {hp:28, mov:2, cost:3, weight:3, rng:1, tileTarget:false, blocks:true,  firebolt:false, diag_move:false, diag_atk:true,  cleave:4, atk_type:'Melee',    atk:{P:3,Me:12,Ex:1,Ma:2}, dfn:{P:9,Me:8,Ex:7,Ma:4}},
-            Adept:    {hp:10, mov:1, cost:1, weight:2, rng:3, tileTarget:false, blocks:false, firebolt:true,  diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Magic',    atk:{P:1,Me:1,Ex:1,Ma:6}, dfn:{P:2,Me:2,Ex:3,Ma:5}},
+            Adept:    {hp:10, mov:1, cost:1, weight:1, rng:2, tileTarget:false, blocks:false, firebolt:true,  diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Magic',    atk:{P:1,Me:1,Ex:1,Ma:6}, dfn:{P:2,Me:2,Ex:3,Ma:5}},
             Mage:     {hp:14, mov:2, cost:2, weight:2, rng:3, tileTarget:true,  blocks:false, firebolt:true,  diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Magic',    atk:{P:1,Me:1,Ex:1,Ma:10}, dfn:{P:3,Me:2,Ex:4,Ma:8}},
             Archmage: {hp:18, mov:2, cost:3, weight:2, rng:4, tileTarget:true,  blocks:false, firebolt:true,  diag_move:true,  diag_atk:true,  cleave:0, atk_type:'Magic',    atk:{P:1,Me:2,Ex:1,Ma:14}, dfn:{P:4,Me:3,Ex:5,Ma:10}}
         };
@@ -437,7 +437,8 @@
                 this.plannedC = null;
                 this.plannedAtk = null;
                 this.plannedTrap = null;   // {r,c} for Rogue trap placement
-                this.plannedBeacon = null; // {r,c} for Adept Beacon Mark
+                this.plannedWell = null; // {r,c} for Mage Gravity Well
+                this.plannedLeyLine = false; // Adept/Mage/Archmage: channelling Ley Line this turn
                 this.plannedAid = null;    // {r,c} for Knight/Paladin lend aid
                 this.plannedStealth = false; // Assassin: enter stealth this turn
                 this.plannedShadow = null; // Assassin: shadow strike target {r,c}
@@ -459,6 +460,18 @@
                 this.lastTargetC = null;
                 this.focusChannelStack = 0;  // Adept: consecutive turns stationary (stacking +1 Magic dmg)
                 this.vanguardMov = 0;        // Squire: +1 mov for next turn if killed last turn
+                this._deathSaveUsed = false; // Assassin: once-per-match save from lethal damage
+                this._windedTurns = 0;       // Knight: turns remaining in Winded post-charge cooldown
+                // Mark Target (Assassin): plannedMark holds the target unit
+                // ref this turn; once resolved, target gets _markTurnsLeft +
+                // _markedBy. _markJustSet skips bonus on the turn it was set.
+                this.plannedMark = null;
+                this._markTurnsLeft = 0;
+                this._markedBy = null;
+                this._markJustSet = false;
+                // Rain of Arrows (Archer): true while the unit is firing into
+                // a Loose Volley formation this turn.
+                this.plannedRainArrow = false;
                 this._activeSynergies = [];  // Computed each planning tick; used by renderer
             }
         }
@@ -492,7 +505,7 @@
                 // Phased animation speed settings (configurable via settings UI)
                 this.animSpeedSettings = { delay: 2000, speed: 1.0 };
                 this.traps = []; // [{player, r, c, ownerId}] - placed by Rogues, persist on board
-                this.beacons = []; // [{player, ownerId, r, c}] — Adept Beacon Mark; persists while owner alive
+                this.wells = []; // [{player, ownerId, r, c, turnsLeft}] — Mage Gravity Well; lasts 2 turns
                 // Match log (see resolveAction / drawGameOver). Also reset
                 // inside initBoard() so campaign match-to-match transitions
                 // start fresh.
@@ -548,7 +561,7 @@
                 this.turn = 0;
                 this.animation = null;
                 this.traps = [];
-                this.beacons = [];
+                this.wells = [];
                 // Full-match text log for post-game review. Populated by
                 // captureTurnStart/logTurn/logMatchResult and copied to the
                 // clipboard from the Game Over screen.
@@ -588,7 +601,7 @@
                     plannedR: u.plannedR, plannedC: u.plannedC,
                     plannedAtk: u.plannedAtk ? {...u.plannedAtk} : null,
                     plannedTrap: u.plannedTrap ? {...u.plannedTrap} : null,
-                    plannedBeacon: u.plannedBeacon ? {...u.plannedBeacon} : null,
+                    plannedWell: u.plannedWell ? {...u.plannedWell} : null,
                     plannedAid: u.plannedAid ? {...u.plannedAid} : null,
                     plannedShadow: u.plannedShadow ? {...u.plannedShadow} : null,
                     plannedRain: u.plannedRain ? {...u.plannedRain} : null,
@@ -621,7 +634,7 @@
                         else if (a.direction) parts.push(`atk-dir[${a.direction[0]},${a.direction[1]}]`);
                     }
                     if (u.plannedTrap)   parts.push(`trap→(${u.plannedTrap.r},${u.plannedTrap.c})`);
-                    if (u.plannedBeacon) parts.push(`beacon→(${u.plannedBeacon.r},${u.plannedBeacon.c})`);
+                    if (u.plannedWell) parts.push(`well→(${u.plannedWell.r},${u.plannedWell.c})`);
                     if (u.plannedAid)    parts.push(`aid→(${u.plannedAid.r},${u.plannedAid.c})`);
                     if (u.plannedShadow) parts.push(`shadow→(${u.plannedShadow.r},${u.plannedShadow.c})`);
                     if (u.plannedRain)   parts.push(`rain→(${u.plannedRain.r},${u.plannedRain.c})`);
@@ -745,7 +758,10 @@
                     // rating means they shouldn't be sprinting two tiles
                     // in a single turn — restrict the charge rule to
                     // weight-3 units whose base move is already 2+.
-                    if (STATS[unit.type].weight === 3 && STATS[unit.type].mov >= 2 && dist === 0) {
+                    // Knight Winded: 1-turn charge cooldown after a successful
+                    // charge. Paladins are exempt.
+                    let canCharge = !(unit.type === 'Knight' && unit._windedTurns > 0);
+                    if (STATS[unit.type].weight === 3 && STATS[unit.type].mov >= 2 && dist === 0 && canCharge) {
                         let chargeDir = [[2, 0], [-2, 0], [0, 2], [0, -2]];
                         for (let [dr, dc] of chargeDir) {
                             let nr = r + dr, nc = c + dc;
@@ -849,6 +865,23 @@
             // resolve step that can reduce HP (squeeze, trample, ranged fire,
             // traps, cleave, archmage rain, end-of-turn culling).
             cullDeadUnits() {
+                // Assassin Death Save: once per match, lethal damage cancels
+                // ALL damage the Assassin took this turn — HP is restored to
+                // the value at the start of the turn, and the Assassin is
+                // immune to further damage for the remainder of resolution.
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (u.type === 'Assassin' && u.hp <= 0 && !u._deathSaveUsed) {
+                        let restoreTo = (typeof u._turnStartHp === 'number' && u._turnStartHp > 0) ? u._turnStartHp : 1;
+                        u.hp = restoreTo;
+                        u._deathSaveUsed = true;
+                        u._deathSaveImmune = true;
+                        u._activeSynergies = [...(u._activeSynergies || []), 'Death Save'];
+                        if (this.combatLog) {
+                            let pName = u.player === 1 ? 'P1' : 'P2';
+                            this.combatLog.push(`${pName} Assassin [Death Save]: would-be-lethal damage cancelled — HP restored to ${restoreTo} (once per match)`);
+                        }
+                    }
+                }
                 this.p1Units = this.p1Units.filter(u => u.hp > 0);
                 this.p2Units = this.p2Units.filter(u => u.hp > 0);
             }
@@ -859,10 +892,19 @@
             tileKey(r, c) { return `${r},${c}`; }
 
             hit(att, tgt, halved, damageType, multiplier, flatBonus, logTag, dmgSource) {
+                // Death Save immune: Assassin who triggered their save earlier
+                // this turn no longer takes any damage.
+                if (tgt._deathSaveImmune) return;
                 // Use the attacker's primary damage type code
                 if (!damageType) {
                     let at = STATS[att.type].atk_type;
                     damageType = at === 'Piercing' ? 'P' : at === 'Melee' ? 'Me' : at === 'Explosive' ? 'Ex' : 'Ma';
+                }
+                // Poisoned Dart (Rogue): +50% damage to targets currently below half HP
+                let poisonedDart = false;
+                if (att.type === 'Rogue' && tgt.hp < tgt.maxHp / 2) {
+                    multiplier = (multiplier || 1) * 1.5;
+                    poisonedDart = true;
                 }
                 let aurBonus = this.isInPaladinAura(tgt) ? 2 : 0;
                 // Last Stand: +3 Me defense for an isolated Squire
@@ -877,14 +919,16 @@
                     phalanxDef = 2;
                 }
                 let rawAtk = STATS[att.type].atk[damageType];
-                // Dark Conclave: +3 Magic for Adepts in a triangle
-                let conclaveBonus = 0;
-                if (att.type === 'Adept' && att._darkConclave && damageType === 'Ma') {
-                    conclaveBonus = 3;
-                }
                 let rawDfn = STATS[tgt.type].dfn[damageType];
+                // Mark Target: halves P defense (rounded down) on Piercing
+                // attacks. Doesn't apply on the turn the mark was placed.
+                let markedHalving = false;
+                if (damageType === 'P' && tgt._markTurnsLeft > 0 && !tgt._markJustSet) {
+                    rawDfn = Math.floor(rawDfn / 2);
+                    markedHalving = true;
+                }
                 let totalDfn = rawDfn + aurBonus + lastStandDef + phalanxDef;
-                let dmg = Math.max(1, (rawAtk + conclaveBonus) - totalDfn);
+                let dmg = Math.max(1, rawAtk - totalDfn);
                 dmg = Math.floor(dmg * (multiplier || 1));
                 if (halved) dmg = Math.max(1, Math.floor(dmg / 2));
                 if (flatBonus) dmg += flatBonus;
@@ -896,15 +940,15 @@
                 if (this.combatLog) {
                     let pName = att.player === 1 ? 'P1' : 'P2';
                     let tName = tgt.player === 1 ? 'P1' : 'P2';
-                    let mathParts = [`${rawAtk}${conclaveBonus ? '+'+conclaveBonus : ''} atk(${damageType}) - ${rawDfn} dfn(${damageType})`];
+                    let mathParts = [`${rawAtk} atk(${damageType}) - ${rawDfn} dfn(${damageType})${markedHalving ? ' [Mark: P def halved]' : ''}`];
                     let amps = [];
-                    if (conclaveBonus) { amps.push('Dark Conclave'); }
+                    if (markedHalving) amps.push('Mark');
                     if (aurBonus) { mathParts.push(`- ${aurBonus} aura`); amps.push('Paladin Aura'); }
                     if (lastStandDef) { mathParts.push(`- ${lastStandDef} Last Stand`); amps.push('Last Stand'); }
                     if (phalanxDef) { mathParts.push(`- ${phalanxDef} Phalanx`); amps.push('Phalanx'); }
                     let baseStr = mathParts.join(' ');
                     let modParts = [];
-                    if ((multiplier || 1) !== 1) { modParts.push(`×${multiplier}`); amps.push(multiplier === 2 ? 'Charge' : `×${multiplier} amp`); }
+                    if ((multiplier || 1) !== 1) { modParts.push(`×${multiplier}`); amps.push(multiplier === 2 ? 'Charge' : poisonedDart ? 'Poisoned Dart' : `×${multiplier} amp`); }
                     if (halved) { modParts.push('÷2 (splash)'); }
                     if (flatBonus) { modParts.push(`+${flatBonus} flat`); amps.push('flat bonus'); }
                     let modStr = modParts.length ? ' → ' + modParts.join(' ') : '';
@@ -924,29 +968,6 @@
                     if (r === backRow) base += 1;
                 }
                 return base;
-            }
-
-            // For synergy detection (Arcing Firebolt, Flame Arrow) we need to
-            // know the "focus tile" of each attacker. For tile-targeted units
-            // it's their explicit target; for Adept firebolt it's the first
-            // enemy tile on their path (or null if none).
-            getFocusTile(u) {
-                if (!u.plannedAtk) return null;
-                if (u.plannedAtk.targetR != null) {
-                    return {r: u.plannedAtk.targetR, c: u.plannedAtk.targetC};
-                }
-                if (STATS[u.type].firebolt && u.plannedAtk.direction) {
-                    let [dr, dc] = u.plannedAtk.direction;
-                    let maxDist = STATS[u.type].rng;
-                    for (let i = 1; i <= maxDist; i++) {
-                        let r = u.plannedR + dr * i, c = u.plannedC + dc * i;
-                        if (r < 0 || r >= ROWS || c < 0 || c >= COLS) break;
-                        let t = this.getPlannedUnitAt(r, c);
-                        if (t && t.player !== u.player) return {r, c};
-                    }
-                    return null;
-                }
-                return null;
             }
 
             // Compute synergy flags for each unit at planning time. Called
@@ -1035,56 +1056,70 @@
                     }
                 }
 
-                // DARK CONCLAVE: 3 friendly Adepts forming a RIGHT triangle.
-                // Each gets +3 Magic damage. The area inside the triangle
-                // + 1 tile around each Adept reveals hidden units/traps.
-                this._conclaveAreas = [];
-                for (let team of [this.p1Units, this.p2Units]) {
-                    let adepts = team.filter(u => u.type === 'Adept');
-                    if (adepts.length < 3) continue;
-                    for (let i = 0; i < adepts.length; i++) {
-                        for (let j = i + 1; j < adepts.length; j++) {
-                            for (let k = j + 1; k < adepts.length; k++) {
-                                let a = adepts[i], b = adepts[j], c = adepts[k];
-                                let ar = pr(a), ac = pc(a);
-                                let br = pr(b), bc = pc(b);
-                                let cr2 = pr(c), cc2 = pc(c);
-                                if (ar == null || br == null || cr2 == null) continue;
-                                // Collinear check
-                                let cross = (br - ar) * (cc2 - ac) - (bc - ac) * (cr2 - ar);
-                                if (cross === 0) continue;
-                                // Right triangle check: one of the 3 angles must be 90°.
-                                // Dot product of the two edges at each vertex = 0 → right angle.
-                                let dot1 = (br - ar) * (cr2 - ar) + (bc - ac) * (cc2 - ac); // angle at A
-                                let dot2 = (ar - br) * (cr2 - br) + (ac - bc) * (cc2 - bc); // angle at B
-                                let dot3 = (ar - cr2) * (br - cr2) + (ac - cc2) * (bc - cc2); // angle at C
-                                if (dot1 !== 0 && dot2 !== 0 && dot3 !== 0) continue; // no right angle
-                                // Mark all 3 as Dark Conclave
-                                for (let u of [a, b, c]) {
-                                    if (!u._activeSynergies.includes('DarkConclave')) {
-                                        u._activeSynergies.push('DarkConclave');
-                                        u._darkConclave = true;
-                                    }
-                                }
-                                // Compute reveal area: tiles inside the triangle + 1 around each adept
-                                let tiles = new Set();
-                                // Brute-force: check every board tile
-                                for (let r = 0; r < ROWS; r++) {
-                                    for (let c = 0; c < COLS; c++) {
-                                        // Within 1 of any conclave adept?
-                                        let nearAdept = [a,b,c].some(u => Math.max(Math.abs(pr(u)-r), Math.abs(pc(u)-c)) <= 1);
-                                        // Inside the triangle? (barycentric test)
-                                        let d1 = (r - br) * (ac - bc) - (c - bc) * (ar - br);
-                                        let d2 = (r - cr2) * (bc - cc2) - (c - cc2) * (br - cr2);
-                                        let d3 = (r - ar) * (cc2 - ac) - (c - ac) * (cr2 - ar);
-                                        let hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-                                        let hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-                                        let inside = !(hasNeg && hasPos);
-                                        if (nearAdept || inside) tiles.add(`${r},${c}`);
-                                    }
-                                }
-                                let teamPlayer = team[0].player;
-                                this._conclaveAreas.push({player: teamPlayer, tiles, adepts: [a,b,c]});
+                // LEY LINE: 2+ same-team casters who BOTH selected 'Cast Ley
+                // Line' this turn AND share a row or column. Casting the line
+                // requires the caster to forfeit their attack and stay still —
+                // enforced when plannedLeyLine is set. The line is detected
+                // here so the planning UI can show a preview to the owner.
+                // Hidden from the opponent during their planning phase so the
+                // bluff/maintain decision stays private.
+                this._leyLines = [];
+                this._rainZones = [];
+                let lineTeams = [this.p1Units, this.p2Units];
+                if (this.phase === 'PLAN_P1') lineTeams = [this.p1Units];
+                else if (this.phase === 'PLAN_P2') lineTeams = [this.p2Units];
+                // RAIN OF ARROWS: 3+ Archers with plannedRainArrow sharing a
+                // row or column. Use planned positions (forced to current).
+                for (let team of lineTeams) {
+                    let rainers = team.filter(u => u.type === 'Archer' && u.plannedRainArrow);
+                    if (rainers.length < 3) continue;
+                    let byRow = {}, byCol = {};
+                    for (let u of rainers) {
+                        let r = pr(u), c = pc(u);
+                        (byRow[r] = byRow[r] || []).push(u);
+                        (byCol[c] = byCol[c] || []).push(u);
+                    }
+                    let teamPlayer = team[0] ? team[0].player : null;
+                    for (let r in byRow) {
+                        if (byRow[r].length >= 3) {
+                            this._rainZones.push({player: teamPlayer, axis: 'row', index: parseInt(r), archers: byRow[r], n: byRow[r].length});
+                            for (let a of byRow[r]) {
+                                if (!a._activeSynergies.includes('RainArrows')) a._activeSynergies.push('RainArrows');
+                            }
+                        }
+                    }
+                    for (let c in byCol) {
+                        if (byCol[c].length >= 3) {
+                            this._rainZones.push({player: teamPlayer, axis: 'col', index: parseInt(c), archers: byCol[c], n: byCol[c].length});
+                            for (let a of byCol[c]) {
+                                if (!a._activeSynergies.includes('RainArrows')) a._activeSynergies.push('RainArrows');
+                            }
+                        }
+                    }
+                }
+                for (let team of lineTeams) {
+                    let channelers = team.filter(u => u.plannedLeyLine);
+                    if (channelers.length < 2) continue;
+                    let byRow = {}, byCol = {};
+                    for (let u of channelers) {
+                        let r = pr(u), c = pc(u);
+                        (byRow[r] = byRow[r] || []).push(u);
+                        (byCol[c] = byCol[c] || []).push(u);
+                    }
+                    let teamPlayer = team[0] ? team[0].player : null;
+                    for (let r in byRow) {
+                        if (byRow[r].length >= 2) {
+                            this._leyLines.push({player: teamPlayer, axis: 'row', index: parseInt(r), casters: byRow[r]});
+                            for (let cu of byRow[r]) {
+                                if (!cu._activeSynergies.includes('LeyLine')) cu._activeSynergies.push('LeyLine');
+                            }
+                        }
+                    }
+                    for (let c in byCol) {
+                        if (byCol[c].length >= 2) {
+                            this._leyLines.push({player: teamPlayer, axis: 'col', index: parseInt(c), casters: byCol[c]});
+                            for (let u of byCol[c]) {
+                                if (!u._activeSynergies.includes('LeyLine')) u._activeSynergies.push('LeyLine');
                             }
                         }
                     }
@@ -1097,7 +1132,7 @@
             // `source` tags the resolution sub-step for phased playback:
             //   'movement' = trample, readied shot, trap, squeeze, edge impact
             //   'combat'   = normal attacks, cleave, volley, arcing splash
-            //   'finale'   = charge 2x, rain fire, shadow strike, beacon mark, arcing center, volley
+            //   'finale'   = charge 2x, rain fire, shadow strike, volley
             //   'attrition'= the Weaver's culling tick
             recordDamage(unit, amount, kind, attacker, damageType, source) {
                 if (!this.pendingDamages) this.pendingDamages = [];
@@ -1162,6 +1197,60 @@
                 return targets;
             }
 
+            // Walk a tile-by-tile path from (r0,c0) to (r1,c1). Returns the
+            // list of tiles INCLUDING start and end. Path supports orthogonal,
+            // diagonal, and 2-tile charges (linear in row or column).
+            getMovementPath(r0, c0, r1, c1) {
+                let dr = r1 - r0, dc = c1 - c0;
+                let steps = Math.max(Math.abs(dr), Math.abs(dc));
+                let path = [{r: r0, c: c0}];
+                if (steps === 0) return path;
+                let sdr = dr / steps, sdc = dc / steps;
+                for (let i = 1; i <= steps; i++) {
+                    path.push({
+                        r: r0 + Math.round(sdr * i),
+                        c: c0 + Math.round(sdc * i)
+                    });
+                }
+                return path;
+            }
+
+            // Count Ley Line wall crossings for a given path. A row Ley Line
+            // at row R has two walls: top (between R-1 and R) and bottom
+            // (between R and R+1). Each tile-to-tile step crosses 0, 1, or
+            // (rare) 2 walls. Same logic for column Ley Lines.
+            countLeyLineCrossings(path, ley) {
+                let hits = 0;
+                for (let i = 1; i < path.length; i++) {
+                    let prev = path[i-1], cur = path[i];
+                    if (ley.axis === 'row') {
+                        let R = ley.index;
+                        if ((prev.r === R - 1 && cur.r === R) || (prev.r === R && cur.r === R - 1)) hits++;
+                        if ((prev.r === R && cur.r === R + 1) || (prev.r === R + 1 && cur.r === R)) hits++;
+                    } else {
+                        let C = ley.index;
+                        if ((prev.c === C - 1 && cur.c === C) || (prev.c === C && cur.c === C - 1)) hits++;
+                        if ((prev.c === C && cur.c === C + 1) || (prev.c === C + 1 && cur.c === C)) hits++;
+                    }
+                }
+                return hits;
+            }
+
+            // Does the straight-line/diagonal path from (r0,c0) to (r1,c1)
+            // pass through tile (tr,tc)? Used by Gravity Well slow check.
+            pathCrossesTile(r0, c0, r1, c1, tr, tc) {
+                let dr = r1 - r0, dc = c1 - c0;
+                let steps = Math.max(Math.abs(dr), Math.abs(dc));
+                if (steps === 0) return r0 === tr && c0 === tc;
+                let sdr = dr / steps, sdc = dc / steps;
+                for (let i = 1; i <= steps; i++) {
+                    let r = r0 + Math.round(sdr * i);
+                    let c = c0 + Math.round(sdc * i);
+                    if (r === tr && c === tc) return true;
+                }
+                return false;
+            }
+
             findBumpDestination(defender, defR, defC, attOldR, attOldC, claimed) {
                 let dr = defR - attOldR;
                 let dc = defC - attOldC;
@@ -1203,6 +1292,9 @@
                 // Save original positions
                 let origPos = new Map();
                 for (let u of allUnits) origPos.set(u, {r: u.r, c: u.c});
+                // Snapshot starting HP for Assassin Death Save (lethal damage
+                // this turn restores to this value).
+                for (let u of allUnits) u._turnStartHp = u.hp;
 
                 // Pre-action snapshot: capture where every unit is and where
                 // they plan to move, for the post-action review overlay.
@@ -1227,6 +1319,68 @@
                 // Track units that got bounced (reverted to origin) so later
                 // squeeze logic can decide if they're crushed by friendlies.
                 let bounced = new Set();
+
+                // --- GRAVITY WELL SLOW ---
+                // Enemy units whose planned movement path crosses an active
+                // well tile have their movement capped to 1 step this turn.
+                // Friendly units of the well's owner pass through normally.
+                for (let u of allUnits) {
+                    if (u.plannedR == null) continue;
+                    if (u.plannedR === u.r && u.plannedC === u.c) continue;
+                    for (let w of this.wells) {
+                        if (w.player === u.player) continue;
+                        if (this.pathCrossesTile(u.r, u.c, u.plannedR, u.plannedC, w.r, w.c)) {
+                            let dr = Math.sign(u.plannedR - u.r);
+                            let dc = Math.sign(u.plannedC - u.c);
+                            u.plannedR = u.r + dr;
+                            u.plannedC = u.c + dc;
+                            u._gravWellSlowed = true;
+                            if (this.combatLog) {
+                                let pName = u.player === 1 ? 'P1' : 'P2';
+                                this.combatLog.push(`${pName} ${u.type} slowed by Gravity Well at (${w.r},${w.c}) — movement capped to 1`);
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                // --- LEY LINE WEAVER DAMAGE ---
+                // Enemy units whose movement path crosses a Ley Line wall take
+                // ceil(maxHp * 0.15) Weaver damage per crossing. Defense-
+                // ignoring; bypassed by stealth; friendlies of the line's
+                // casters pass freely. Applied AFTER gravity well slow so
+                // slowed paths use the truncated destination.
+                // Recompute synergies now that phase is ACTION_RESOLVE — this
+                // sets _leyLines from BOTH teams' plannedLeyLine flags.
+                this.computeSynergies();
+                if (this._leyLines && this._leyLines.length) {
+                    for (let u of allUnits) {
+                        if (u.hp <= 0) continue;
+                        if (u._deathSaveImmune) continue;
+                        if (u.stealthed) continue;
+                        if (u.plannedR == null) continue;
+                        let path = this.getMovementPath(u.r, u.c, u.plannedR, u.plannedC);
+                        if (path.length < 2) continue;
+                        for (let ley of this._leyLines) {
+                            if (ley.player === u.player) continue;
+                            let crossings = this.countLeyLineCrossings(path, ley);
+                            if (crossings === 0) continue;
+                            let perWall = Math.ceil(u.maxHp * 0.15);
+                            let total = perWall * crossings;
+                            u.hp -= total;
+                            this.recordDamage(u, total, 'dmg', null, null, 'movement');
+                            if (this.combatLog) {
+                                let pName = u.player === 1 ? 'P1' : 'P2';
+                                let axisLabel = ley.axis === 'row' ? `row ${ley.index}` : `col ${ley.index}`;
+                                this.combatLog.push(`${pName} ${u.type} crosses Ley Line (${axisLabel}, ${crossings} wall${crossings>1?'s':''}): ${total} Weaver dmg (${perWall}×${crossings}, ignores defense)`);
+                            }
+                            for (let cu of ley.casters) {
+                                if (!cu._activeSynergies.includes('LeyLine Hit')) cu._activeSynergies.push('LeyLine Hit');
+                            }
+                        }
+                    }
+                    this.cullDeadUnits();
+                }
 
                 // --- PHALANX DETECTION ---
                 // A "phalanx" is 3+ friendly Squires in a contiguous orthogonal
@@ -1550,6 +1704,7 @@
                 }
                 for (let u of bounced) {
                     if (u.hp <= 0) continue;
+                    if (u._deathSaveImmune) continue;
                     let dest = finalDest.get(u);
                     for (let [other, oDest] of finalDest) {
                         if (other !== u && other.player === u.player
@@ -1585,7 +1740,7 @@
                             u.plannedR = orig.r;
                             u.plannedC = orig.c;
                             finalCells[origKey] = u;
-                        } else {
+                        } else if (!u._deathSaveImmune) {
                             let prevHpOv = u.hp;
                             u.hp = 0; // overlap squeeze
                             this.recordDamage(u, prevHpOv, 'dmg', null, null, 'movement');
@@ -1675,39 +1830,16 @@
                     this.traps.push({player: u.player, r: u.plannedTrap.r, c: u.plannedTrap.c, ownerId: u});
                     u.plannedTrap = null;
                 }
-                // BEACON MARK promotion: an Adept that planned a beacon places
-                // it (replacing their previous one if any). Beacon persists
-                // until the Adept dies.
+                // GRAVITY WELL promotion: a Mage that planned a well places
+                // it (replacing their previous one if any). Well lasts 2 turns.
                 for (let u of [...this.p1Units, ...this.p2Units]) {
-                    if (!u.plannedBeacon) continue;
-                    this.beacons = this.beacons.filter(b => b.ownerId !== u);
-                    this.beacons.push({player: u.player, ownerId: u, r: u.plannedBeacon.r, c: u.plannedBeacon.c});
-                    u.plannedBeacon = null;
-                    u._activeSynergies = [...(u._activeSynergies || []), 'Beacon Placed'];
+                    if (!u.plannedWell) continue;
+                    this.wells = this.wells.filter(b => b.ownerId !== u);
+                    this.wells.push({player: u.player, ownerId: u, r: u.plannedWell.r, c: u.plannedWell.c, turnsLeft: 2});
+                    u.plannedWell = null;
+                    u._activeSynergies = [...(u._activeSynergies || []), 'Gravity Well'];
                 }
 
-                // Twin Trap amplifier: two friendly traps on the SAME tile THIS
-                // turn (just promoted) fuse into one. The fused trap explodes
-                // with full 5×5 splash and reveals stealthed victims.
-                // We detect by looking at traps grouped by (player,r,c).
-                let twinGroups = {};
-                for (let tr of this.traps) {
-                    let k = `${tr.player},${tr.r},${tr.c}`;
-                    if (!twinGroups[k]) twinGroups[k] = [];
-                    twinGroups[k].push(tr);
-                }
-                for (let k in twinGroups) {
-                    if (twinGroups[k].length >= 2) {
-                        // Mark all entries so resolution uses expanded splash.
-                        for (let tr of twinGroups[k]) {
-                            tr.twinTrap = true;
-                            // Amp badge: surface to each owner's unit for this turn.
-                            if (tr.ownerId) {
-                                tr.ownerId._activeSynergies = [...(tr.ownerId._activeSynergies || []), 'Twin Trap'];
-                            }
-                        }
-                    }
-                }
                 // 2) Detonate any trap whose tile was crossed by a unit. A trap
                 //    triggers if a unit ENDED on it OR if a charging Knight/Paladin
                 //    PASSED through its tile (the mid-tile of a 2-square charge).
@@ -1755,23 +1887,16 @@
                     }
                 }
                 this.traps = stillLive;
-                // De-duplicate twin-trap detonations: if two same-tile traps both
-                // triggered, resolve them as ONE blast (don't stack damage).
-                let seenTwinKey = new Set();
                 for (let trap of detonations) {
-                    if (trap.twinTrap) {
-                        let k = `${trap.player},${trap.r},${trap.c}`;
-                        if (seenTwinKey.has(k)) continue;
-                        seenTwinKey.add(k);
-                    }
                     let baseDmg = 8; // Explosive base damage from a Rogue trap
-                    let splashRadius = trap.twinTrap ? 2 : 1; // Twin = 5×5, normal = 3×3
+                    let splashRadius = 1; // 3×3 splash
                     let triggers = triggersByTile[`${trap.r},${trap.c}`] || new Set();
                     // Triggers (whoever stepped on / charged through) take full damage.
                     // Chargers who passed through the trap mid-charge take unmitigated
                     // damage — momentum carries them straight into the blast.
                     for (let e of triggers) {
                         if (e === trap.ownerId) continue; // Rogue immune to own trap
+                        if (e._deathSaveImmune) continue;
                         let orig = origPos.get(e);
                         let wasCharging = orig && ((Math.abs(e.r - orig.r) === 2 && e.c === orig.c) || (e.r === orig.r && Math.abs(e.c - orig.c) === 2));
                         let dmg;
@@ -1789,13 +1914,12 @@
                             let chargeNote = wasCharging ? ', charge — no defense' : '';
                             this.combatLog.push(`${pName} ${trapOwnerType} Trap → ${tName} ${e.type} [Trap]: ${dmg} dmg (${baseDmg} explosive${wasCharging ? '' : ' - ' + STATS[e.type].dfn.Ex + ' dfn(Ex)'}${chargeNote})`);
                         }
-                        // Twin Trap reveals stealthed victims.
-                        if (trap.twinTrap && e.stealthed) e.stealthed = false;
                     }
                     // Anyone else within the splash radius takes half damage
                     for (let e of [...this.p1Units, ...this.p2Units]) {
                         if (triggers.has(e)) continue;
                         if (e === trap.ownerId) continue;
+                        if (e._deathSaveImmune) continue;
                         let dr = Math.abs(e.r - trap.r);
                         let dc = Math.abs(e.c - trap.c);
                         if (dr > splashRadius || dc > splashRadius) continue;
@@ -1808,13 +1932,6 @@
                             let tName = e.player === 1 ? 'P1' : 'P2';
                             this.combatLog.push(`${pName} ${trapOwnerType} Trap → ${tName} ${e.type} [Trap splash]: ${dmg} dmg (${baseDmg} explosive - ${STATS[e.type].dfn.Ex} dfn(Ex), halved)`);
                         }
-                        if (trap.twinTrap && e.stealthed) e.stealthed = false;
-                    }
-                    // Fused twin traps: remove the other same-tile sibling from this.traps
-                    // so we don't keep a dead trap around after detonation.
-                    if (trap.twinTrap) {
-                        this.traps = this.traps.filter(t2 =>
-                            !(t2.player === trap.player && t2.r === trap.r && t2.c === trap.c));
                     }
                 }
                 this.cullDeadUnits();
@@ -1849,7 +1966,7 @@
                         // from the Assassin's lane defeats the strike.
                         let tgt = this.getUnitAt(u.plannedShadow.r, u.plannedShadow.c);
                         let landed = false;
-                        if (tgt && tgt.player !== u.player) {
+                        if (tgt && tgt.player !== u.player && !tgt._deathSaveImmune) {
                             let behind = this.getBehindTiles(tgt);
                             let inBehind = behind.some(b => b.r === u.r && b.c === u.c);
                             if (inBehind) {
@@ -1910,7 +2027,7 @@
                         let cr = u.plannedRain.r, cc = u.plannedRain.c;
                         // Center tile — full damage
                         let centerVictim = this.getUnitAt(cr, cc);
-                        if (centerVictim) {
+                        if (centerVictim && !centerVictim._deathSaveImmune) {
                             let dmg = Math.max(1, 14 - STATS[centerVictim.type].dfn.Ma);
                             centerVictim.hp -= dmg;
                             this.recordDamage(centerVictim, dmg, 'dmg', u, 'Ma', 'finale');
@@ -1935,6 +2052,7 @@
                             let tr = cr + dr, tc = cc + dc;
                             let v = this.getUnitAt(tr, tc);
                             if (!v) continue;
+                            if (v._deathSaveImmune) continue;
                             let dmg = Math.max(1, 7 - STATS[v.type].dfn.Ma);
                             v.hp -= dmg;
                             this.recordDamage(v, dmg, 'dmg', u, 'Ma', 'finale');
@@ -1981,9 +2099,9 @@
 
                 // Synergies are computed from planned positions BEFORE attack
                 // resolution so they can modify damage (Accuracy, Steady Aim,
-                // Anvil&Hammer, Flame Arrow, Focused Channeling, Last Stand).
-                // Volley and Arcing Firebolt are detected here and flagged on
-                // plannedAtk so the attack loop handles them specially.
+                // Focused Channeling, Last Stand).
+                // Volley is detected here and flagged on plannedAtk so the
+                // attack loop handles it specially.
                 this.computeSynergies();
 
                 // --- VOLLEY DETECTION ---
@@ -2038,63 +2156,6 @@
                     }
                 }
 
-                // --- DARK CONCLAVE REVEAL ---
-                // Use the conclave areas computed in computeSynergies to reveal
-                // stealthed enemies and enemy traps inside the conclave zone.
-                if (this._conclaveAreas) {
-                    for (let ca of this._conclaveAreas) {
-                        let enemies = ca.player === 1 ? this.p2Units : this.p1Units;
-                        for (let e of enemies) {
-                            if (!e.stealthed) continue;
-                            let ep = e.plannedR != null ? `${e.plannedR},${e.plannedC}` : `${e.r},${e.c}`;
-                            if (ca.tiles.has(ep)) {
-                                e.stealthed = false;
-                                e._activeSynergies = [...(e._activeSynergies || []), 'Revealed'];
-                            }
-                        }
-                        for (let trap of this.traps) {
-                            if (trap.player === ca.player) continue;
-                            if (ca.tiles.has(`${trap.r},${trap.c}`)) {
-                                trap._revealed = true;
-                            }
-                        }
-                    }
-                }
-
-                // --- ARCING FIREBOLT DETECTION ---
-                // Two magic units (Adept/Mage/Archmage) whose attacks focus on
-                // the same enemy tile. Center takes 2.5x, plus 3 of 8 random
-                // surrounding tiles take half damage from one caster.
-                let arcingTiles = new Map(); // key "r,c" -> [units]
-                for (let u of allUnits) {
-                    if (!u.plannedAtk) continue;
-                    // Arcing Firebolt requires pre-positioning: caster must not have moved
-                    if (u.plannedR !== u.r || u.plannedC !== u.c) continue;
-                    let focusTile = this.getFocusTile(u);
-                    if (!focusTile) continue;
-                    if (u.type !== 'Adept' && u.type !== 'Mage' && u.type !== 'Archmage') continue;
-                    let k = focusTile.r + ',' + focusTile.c;
-                    if (!arcingTiles.has(k)) arcingTiles.set(k, []);
-                    arcingTiles.get(k).push(u);
-                }
-                let arcingBursts = []; // {r, c, casters, splashes}
-
-                for (let [k, casters] of arcingTiles) {
-                    if (casters.length < 2) continue;
-                    if (casters[0].player !== casters[1].player) continue;
-                    let [r, c] = k.split(',').map(Number);
-                    let offs = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
-                    for (let i = offs.length - 1; i > 0; i--) {
-                        let j = Math.floor(this.rand() * (i + 1));
-                        [offs[i], offs[j]] = [offs[j], offs[i]];
-                    }
-                    let splashes = offs.slice(0, 3);
-                    arcingBursts.push({r, c, casters, splashes});
-                    for (let cu of casters) {
-                        cu._activeSynergies = [...(cu._activeSynergies||[]), 'ArcingFirebolt'];
-                    }
-                }
-
                 for (let u of [...this.p1Units, ...this.p2Units]) {
                     if (!u.plannedAtk) continue;
                     // Volley: handled separately below; skip normal attack for
@@ -2133,54 +2194,14 @@
                         let mul = 1;
                         if (isCharge) mul = 2;
 
-                        // Arcing Firebolt center bonus: if this attacker was part
-                        // of a 2+ caster convergence on this tile, multiply by 2.5.
-                        let focus = this.getFocusTile(u);
-                        if (focus && (u.type === 'Adept' || u.type === 'Mage' || u.type === 'Archmage')) {
-                            let k = focus.r + ',' + focus.c;
-                            let casters = arcingTiles.get(k);
-                            if (casters && casters.length >= 2 && casters.includes(u) && tgt.plannedR === focus.r && tgt.plannedC === focus.c) {
-                                mul *= 2.5;
-                            }
-                        }
-
-                        // (Dark Conclave damage boost is handled as a flat +3 in hit(),
-                        // not a multiplier here — prevents stacking with Arcing Firebolt.)
-
                         // Accuracy (Archer): +50% per stack, cap 3 stacks
                         if (u.type === 'Archer' && u.accuracyStack > 0 && !volleyUsed.has(u)) {
                             mul *= (1 + 0.5 * Math.min(u.accuracyStack, 3));
                         }
 
-                        // Beacon Mark: Archer firing a tile-targeted arrow at a
-                        // friendly beacon tile deals 3× damage. Also sets the
-                        // _beaconHit flag for the badge.
-                        if (u.type === 'Archer' && targetR != null) {
-                            let onBeacon = this.beacons.some(b =>
-                                b.player === u.player && b.r === targetR && b.c === targetC);
-                            if (onBeacon) {
-                                mul *= 3;
-                                u._activeSynergies = [...(u._activeSynergies || []), 'Beacon Mark'];
-                            }
-                        }
-
                         // Steady Aim (Archer): +2 to final damage if ally Squire
                         // sits directly in front of the archer's target line.
                         let steadyBonus = u._steadyAim ? 2 : 0;
-
-                        // Anvil & Hammer (Archer): enemy adjacent to one of my
-                        // player's Squires → +2 to final damage.
-                        let anvilBonus = 0;
-                        if (u.type === 'Archer') {
-                            for (let s of (u.player === 1 ? this.p1Units : this.p2Units)) {
-                                if (s.type !== 'Squire') continue;
-                                if (Math.max(Math.abs(s.plannedR - tgt.plannedR), Math.abs(s.plannedC - tgt.plannedC)) <= 1) {
-                                    anvilBonus = 2;
-                                    u._activeSynergies = [...(u._activeSynergies||[]), 'AnvilHammer'];
-                                    break;
-                                }
-                            }
-                        }
 
                         // Focused Channeling (Adept): stacking +1 Magic per
                         // consecutive stationary turn — applied as flat damage.
@@ -2194,30 +2215,7 @@
                         // Determine source for phased playback
                         let atkSource = 'combat';
                         if (isCharge) atkSource = 'finale';
-                        else if ((u._activeSynergies || []).includes('Beacon Mark')) atkSource = 'finale';
-                        else if (mul >= 2.5 && (u.type === 'Adept' || u.type === 'Mage' || u.type === 'Archmage')) atkSource = 'finale';
-                        this.hit(u, tgt, halved, damageType, mul, steadyBonus + anvilBonus + focusChanBonus, hitTag, atkSource);
-
-                        // Flame Arrow: Archer + Adept targeting same tile — add
-                        // half of the Adept's magic damage on top of the arrow hit.
-                        if (u.type === 'Archer' && STATS[u.type].tileTarget && targetR != null) {
-                            for (let ad of (u.player === 1 ? this.p1Units : this.p2Units)) {
-                                if (ad.type !== 'Adept' || !ad.plannedAtk) continue;
-                                let adFocus = this.getFocusTile(ad);
-                                if (adFocus && adFocus.r === targetR && adFocus.c === targetC) {
-                                    let adMag = Math.max(1, STATS['Adept'].atk.Ma - STATS[tgt.type].dfn.Ma);
-                                    tgt.hp -= Math.floor(adMag / 2);
-                                    this.recordDamage(tgt, Math.floor(adMag / 2), 'dmg', ad, 'Ma', atkSource);
-                                    if (this.combatLog) {
-                                        let pName = u.player === 1 ? 'P1' : 'P2';
-                                        let tName = tgt.player === 1 ? 'P1' : 'P2';
-                                        this.combatLog.push(`${pName} Archer+Adept → ${tName} ${tgt.type} [Flame Arrow]: ${Math.floor(adMag / 2)} bonus dmg (${STATS['Adept'].atk.Ma} magic - ${STATS[tgt.type].dfn.Ma} dfn(Ma), halved) | Amp: Flame Arrow`);
-                                    }
-                                    u._activeSynergies = [...(u._activeSynergies||[]), 'FlameArrow'];
-                                    break;
-                                }
-                            }
-                        }
+                        this.hit(u, tgt, halved, damageType, mul, steadyBonus + focusChanBonus, hitTag, atkSource);
 
                         // Vanguard: Squire killing blow grants +1 mov next turn
                         if (u.type === 'Squire' && tgt.hp <= 0) {
@@ -2281,17 +2279,82 @@
                     }
                 }
 
-                // --- RESOLVE ARCING FIREBOLT SPLASHES ---
-                for (let burst of arcingBursts) {
-                    for (let [sdr, sdc] of burst.splashes) {
-                        let sr = burst.r + sdr, sc = burst.c + sdc;
-                        if (sr < 0 || sr >= ROWS || sc < 0 || sc >= COLS) continue;
-                        let victim = this.getPlannedUnitAt(sr, sc);
-                        if (!victim) continue;
-                        let caster = burst.casters[0];
-                        if (victim.player === caster.player) continue;
-                        this.hit(caster, victim, true, null, 1, 0, 'Arcing Firebolt splash', 'finale');
+                // --- ASSASSIN MARK TARGET ---
+                // Mark is applied at the end of attack resolution so that this
+                // turn's archers don't yet benefit. _markJustSet flag prevents
+                // bonus during the turn it was placed and skips end-of-turn
+                // decrement. From next turn onward, marked targets get halved
+                // P defense for Piercing attacks.
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (u.type !== 'Assassin' || !u.plannedMark) continue;
+                    if (u.hp <= 0) { u.plannedMark = null; continue; }
+                    let target = this.getUnitAt(u.plannedMark.r, u.plannedMark.c);
+                    if (!target || target.player === u.player) {
+                        u.plannedMark = null;
+                        continue;
                     }
+                    target._markTurnsLeft = 2;
+                    target._markedBy = u;
+                    target._markJustSet = true;
+                    u._activeSynergies = [...(u._activeSynergies || []), 'Mark'];
+                    if (this.combatLog) {
+                        let pName = u.player === 1 ? 'P1' : 'P2';
+                        let tName = target.player === 1 ? 'P1' : 'P2';
+                        this.combatLog.push(`${pName} Assassin marks ${tName} ${target.type} — Piercing attacks halve P def for next 2 turns`);
+                    }
+                    u.plannedMark = null;
+                }
+
+                // --- RAIN OF ARROWS DAMAGE ---
+                // Apply rain damage to enemies whose final position is in the
+                // rain row/column. Detected zones were collected earlier from
+                // plannedRainArrow flags. Stealth bypasses; friendlies pass.
+                if (this._rainZones && this._rainZones.length) {
+                    for (let zone of this._rainZones) {
+                        let raw = zone.n * 2;
+                        for (let u of [...this.p1Units, ...this.p2Units]) {
+                            if (u.player === zone.player) continue;
+                            if (u.hp <= 0) continue;
+                            if (u._deathSaveImmune) continue;
+                            if (u.stealthed) continue;
+                            let inZone = (zone.axis === 'row') ? (u.r === zone.index) : (u.c === zone.index);
+                            if (!inZone) continue;
+                            let dfn = STATS[u.type].dfn.P;
+                            // Mark halves P def — rain benefits from focus-fire setup
+                            if (u._markTurnsLeft > 0 && !u._markJustSet) dfn = Math.floor(dfn / 2);
+                            let dmg = Math.max(1, raw - dfn);
+                            u.hp -= dmg;
+                            this.recordDamage(u, dmg, 'dmg', null, 'P', 'finale');
+                            if (this.combatLog) {
+                                let pName = zone.player === 1 ? 'P1' : 'P2';
+                                let tName = u.player === 1 ? 'P1' : 'P2';
+                                let axisLabel = zone.axis === 'row' ? `row ${zone.index}` : `col ${zone.index}`;
+                                this.combatLog.push(`${pName} Rain of Arrows (${zone.n} archers, ${axisLabel}) → ${tName} ${u.type}: ${dmg} dmg (${raw} raw P - ${dfn} dfn(P))`);
+                            }
+                        }
+                    }
+                    this.cullDeadUnits();
+                }
+
+                // --- ROGUE REACTION SHOT ---
+                // Any enemy that ends within 1 tile of a Rogue triggers a free
+                // Piercing shot. Picks closest enemy; tiebreak: lowest HP.
+                for (let u of [...this.p1Units, ...this.p2Units]) {
+                    if (u.type !== 'Rogue' || u.hp <= 0) continue;
+                    let enemies = u.player === 1 ? this.p2Units : this.p1Units;
+                    let nearby = enemies.filter(e =>
+                        e.hp > 0 && e !== u &&
+                        Math.max(Math.abs(e.r - u.r), Math.abs(e.c - u.c)) <= 1);
+                    if (nearby.length === 0) continue;
+                    nearby.sort((a, b) => {
+                        let da = Math.max(Math.abs(a.r - u.r), Math.abs(a.c - u.c));
+                        let db = Math.max(Math.abs(b.r - u.r), Math.abs(b.c - u.c));
+                        if (da !== db) return da - db;
+                        return a.hp - b.hp;
+                    });
+                    let tgt = nearby[0];
+                    this.hit(u, tgt, false, 'P', 1, 0, 'Reaction', 'combat');
+                    u._activeSynergies = [...(u._activeSynergies || []), 'Reaction Shot'];
                 }
 
                 this.cullDeadUnits();
@@ -2305,6 +2368,7 @@
                 // reports a draw.
                 if (this.turn >= this.cullingTurn) {
                     for (let u of [...this.p1Units, ...this.p2Units]) {
+                        if (u._deathSaveImmune) continue;
                         let attrition = Math.max(1, Math.ceil(u.hp * 0.25));
                         u.hp -= attrition;
                         this.recordDamage(u, attrition, 'cull', null, null, 'attrition');
@@ -2316,12 +2380,16 @@
                     this.cullDeadUnits();
                 }
 
-                // Beacon Mark upkeep: any beacon whose owner died is removed.
+                // Gravity Well upkeep: tick down each well's lifetime; drop
+                // expired ones and any whose owner Mage died.
                 let liveUnits = new Set([...this.p1Units, ...this.p2Units]);
-                this.beacons = this.beacons.filter(b => liveUnits.has(b.ownerId));
+                for (let w of this.wells) w.turnsLeft = (w.turnsLeft || 0) - 1;
+                this.wells = this.wells.filter(b => liveUnits.has(b.ownerId) && b.turnsLeft > 0);
 
                 // End-of-turn synergy stack updates (on survivors).
                 for (let u of [...this.p1Units, ...this.p2Units]) {
+                    // Death Save immunity is per-turn — clear before next turn.
+                    if (u._deathSaveImmune) u._deathSaveImmune = false;
                     let moved = (u.plannedR !== null && (u.plannedR !== u.r || u.plannedC !== u.c));
                     // Accuracy (Archer): stack if didn't move AND targeted same tile as last turn.
                     if (u.type === 'Archer') {
@@ -2341,6 +2409,37 @@
                             u.focusChannelStack = Math.min(5, u.focusChannelStack + 1);
                         } else {
                             u.focusChannelStack = 0;
+                        }
+                    }
+                    // Knight Winded: decrement first (consumes a winded turn),
+                    // then check if we charged this turn → re-arm for next turn.
+                    if (u.type === 'Knight') {
+                        if (u._windedTurns > 0) u._windedTurns--;
+                        let orig = origPos.get(u);
+                        if (orig) {
+                            let dR = u.r - orig.r, dC = u.c - orig.c;
+                            let isCharge = (Math.abs(dR) === 2 && dC === 0) || (dR === 0 && Math.abs(dC) === 2);
+                            if (isCharge) u._windedTurns = 1;
+                        }
+                    }
+                    // Ley Line is a per-turn channel — clear the flag so the
+                    // line doesn't leak into the next planning phase. Caster
+                    // re-selects 'Cast Ley Line' next turn to maintain it.
+                    if (u.plannedLeyLine) u.plannedLeyLine = false;
+                    // Loose Volley (Rain of Arrows) is also per-turn.
+                    if (u.plannedRainArrow) u.plannedRainArrow = false;
+                    // Mark Target lifetime: skip decrement on the turn placed
+                    // (_markJustSet); otherwise tick down. Clear when expired
+                    // OR if marker died.
+                    if (u._markTurnsLeft > 0) {
+                        if (u._markJustSet) {
+                            u._markJustSet = false;
+                        } else {
+                            u._markTurnsLeft--;
+                            if (u._markTurnsLeft <= 0 || !u._markedBy || u._markedBy.hp <= 0) {
+                                u._markTurnsLeft = 0;
+                                u._markedBy = null;
+                            }
                         }
                     }
                     // Vanguard +1 mov was applied to THIS turn's planning, so
@@ -2799,7 +2898,9 @@
                         u.ordered = false;
                         u.plannedR = null; u.plannedC = null;
                         u.plannedAtk = null; u.plannedTrap = null;
-                        u.plannedBeacon = null; u.plannedAid = null;
+                        u.plannedWell = null; u.plannedAid = null;
+                        u.plannedLeyLine = false;
+                        u.plannedMark = null; u.plannedRainArrow = false;
                         u.plannedStealth = false; u.plannedShadow = null;
                         u.plannedChannel = false; u.plannedRain = null;
                         u.plannedBlink = null;
@@ -2855,7 +2956,9 @@
                         u.ordered = false;
                         u.plannedR = null; u.plannedC = null;
                         u.plannedAtk = null; u.plannedTrap = null;
-                        u.plannedBeacon = null; u.plannedAid = null;
+                        u.plannedWell = null; u.plannedAid = null;
+                        u.plannedLeyLine = false;
+                        u.plannedMark = null; u.plannedRainArrow = false;
                         u.plannedStealth = false; u.plannedShadow = null;
                         u.plannedChannel = false; u.plannedRain = null;
                         u.plannedBlink = null;
@@ -2888,7 +2991,7 @@
                             u.ordered = false;
                             u.plannedR = null; u.plannedC = null;
                             u.plannedAtk = null; u.plannedTrap = null;
-                            u.plannedBeacon = null; u.plannedAid = null;
+                            u.plannedWell = null; u.plannedAid = null;
                             u.plannedStealth = false; u.plannedShadow = null;
                             u.plannedChannel = false; u.plannedRain = null;
                             u.plannedBlink = null;
@@ -3001,14 +3104,14 @@
                 let me = this.localPlayer;
                 let myUnits = me === 1 ? this.p1Units : this.p2Units;
                 let myTraps = this.traps.filter(t => t.player === me);
-                let myBeacons = this.beacons.filter(b => b.player === me)
-                    .map(b => ({player: b.player, r: b.r, c: b.c, ownerIdRef: b.ownerId ? b.ownerId.id : null}));
+                let myWells = this.wells.filter(b => b.player === me)
+                    .map(b => ({player: b.player, r: b.r, c: b.c, turnsLeft: b.turnsLeft, ownerIdRef: b.ownerId ? b.ownerId.id : null}));
                 try {
                     this.conn.send({
                         t: 'ready',
                         units: myUnits.map(serializeUnit),
                         traps: myTraps.map(t => ({...t})),
-                        beacons: myBeacons
+                        wells: myWells
                     });
                 } catch (e) {
                     console.warn('remote ready send failed', e);
@@ -3441,10 +3544,8 @@
                     for (let e of enemies) {
                         let p = this.predictEnemyTile(e);
                         let dist = Math.max(Math.abs(p.r - u.plannedR), Math.abs(p.c - u.plannedC));
-                        let onBeacon = u.type === 'Archer' && this.beacons.some(b =>
-                            b.player === u.player && b.r === p.r && b.c === p.c);
                         if (dist === 0) continue;
-                        if (dist > rng && !onBeacon) continue;
+                        if (dist > rng) continue;
                         let score = 10 + (e.maxHp - e.hp); // prefer damaged
                         // Accuracy: repeating same target carries bonus — so a
                         // stationary archer that aimed here last turn scores higher.
@@ -3452,7 +3553,6 @@
                             && u.plannedR === u.r && u.plannedC === u.c) {
                             score += 5 * (u.accuracyStack + 1);
                         }
-                        if (onBeacon) score += 40; // Beacon Mark = 3X damage
                         if (score > bestScore) { bestScore = score; bestTile = p; }
                     }
                     if (bestTile) u.plannedAtk = {r: 0, c: 0, damageType: null, isCharge: false, targetR: bestTile.r, targetC: bestTile.c};
@@ -3498,27 +3598,14 @@
                     for (let e of enemies) {
                         let p = this.predictEnemyTile(e);
                         let dist = Math.max(Math.abs(p.r - u.plannedR), Math.abs(p.c - u.plannedC));
-                        let onBeacon = u.type === 'Archer' && this.beacons.some(b =>
-                            b.player === u.player && b.r === p.r && b.c === p.c);
                         if (dist === 0) continue;
-                        if (dist > rng && !onBeacon) continue;
+                        if (dist > rng) continue;
                         let score = 10;
                         if (focusTarget && e === focusTarget) score += 50;
                         score += (e.maxHp - e.hp) * 2;
                         if (u.type === 'Archer' && u.lastTargetR === p.r && u.lastTargetC === p.c
                             && u.plannedR === u.r && u.plannedC === u.c) {
                             score += 8 * (u.accuracyStack + 1);
-                        }
-                        if (onBeacon) score += 60; // Beacon Mark = 3X damage, huge priority
-                        // Prefer targeting a tile next to a friendly Squire (Anvil & Hammer)
-                        if (u.type === 'Archer') {
-                            let allies = u.player === 1 ? this.p1Units : this.p2Units;
-                            for (let f of allies) {
-                                if (f.type !== 'Squire' || f === u) continue;
-                                if (Math.max(Math.abs(f.plannedR - p.r), Math.abs(f.plannedC - p.c)) <= 1) {
-                                    score += 5; break;
-                                }
-                            }
                         }
                         if (score > bestScore) { bestScore = score; bestTile = p; }
                     }
@@ -3800,14 +3887,14 @@
                         Volley:         {glyph: '⇶', color: '#ffd090', title: 'Volley', desc: '2 Archers targeting the same tile — both deal +2 dmg'},
                         Accuracy:       {glyph: '◎',  color: '#ffe74c', title: 'Accuracy', desc: 'Stationary Archer repeating the same target — +1 dmg per stack'},
                         SteadyAim:      {glyph: '✦',  color: '#b0f0ff', title: 'Steady Aim', desc: 'Archer with friendly Squire directly in front — +2 Pierce dmg'},
-                        AnvilHammer:    {glyph: '⚒',  color: '#ff9a50', title: 'Anvil & Hammer', desc: 'Archer targets a tile adjacent to friendly Squire — +1 Pierce dmg'},
-                        FlameArrow:     {glyph: '🔥', color: '#ff7a30', title: 'Flame Arrow', desc: 'Archer and Adept target the same tile — arrow deals Magic dmg instead'},
                         LastStand:      {glyph: '✚',  color: '#e0e0ff', title: 'Last Stand', desc: 'Isolated Squire with no adjacent allies — +3 Melee defense'},
                         Vanguard:       {glyph: '➤',  color: '#80ff80', title: 'Vanguard', desc: 'Squire scored a kill last turn — +1 movement this turn'},
-                        ArcingFirebolt: {glyph: '✺',  color: '#ff60a0', title: 'Arcing Firebolt', desc: '2+ magic users targeting the same tile — bolts arc to adjacent enemies'},
                         FocusedChan:    {glyph: '◈',  color: '#a080ff', title: 'Focused Channeling', desc: 'Stationary Adept — +1 Magic dmg per turn held still'},
+                        LeyLine:        {glyph: '═',  color: '#b278e6', title: 'Ley Line', desc: '2+ stationary casters in a row/column — Weaver wall, 15% maxHP per wall crossed'},
+                        'LeyLine Hit':  {glyph: '═',  color: '#e0c0ff', title: 'Ley Line Triggered', desc: 'Caster\'s Ley Line damaged a crossing enemy this turn'},
+                        RainArrows:     {glyph: '☄',  color: '#ffba60', title: 'Rain of Arrows', desc: '3+ Archers Loose Volley on shared row/col — N×2 raw P to ending enemies'},
+                        Mark:           {glyph: '◎',  color: '#ff6060', title: 'Mark Target', desc: 'Assassin marked an enemy — Piercing attacks halve their P def for 2 turns'},
                         Phalanx:        {glyph: '▥',  color: '#cfd8ff', title: 'Phalanx', desc: '3+ Squires in a line — +2 Melee defense, halts enemy charges'},
-                        DarkConclave:   {glyph: '⛧',  color: '#8a40c0', title: 'Dark Conclave', desc: '3 Adepts in a right triangle — +3 Magic dmg, reveals hidden units and traps'},
                     };
                     let shown = [];
                     for (let s of u._activeSynergies) {
@@ -3963,15 +4050,15 @@
                     for (let t of game.traps) {
                         if (t.player === myPlayer) this.drawTrap(t.r, t.c, false);
                     }
-                    // Existing beacons owned by this player
-                    for (let b of game.beacons) {
-                        if (b.player === myPlayer) this.drawBeacon(b.r, b.c, false);
+                    // Existing gravity wells owned by this player
+                    for (let b of game.wells) {
+                        if (b.player === myPlayer) this.drawWell(b.r, b.c, false);
                     }
-                    // Newly-planned trap/beacon for currently-selected unit (preview)
+                    // Newly-planned trap/well for currently-selected unit (preview)
                     let myUnits = myPlayer === 1 ? game.p1Units : game.p2Units;
                     for (let u of myUnits) {
                         if (u.plannedTrap) this.drawTrap(u.plannedTrap.r, u.plannedTrap.c, true);
-                        if (u.plannedBeacon) this.drawBeacon(u.plannedBeacon.r, u.plannedBeacon.c, true);
+                        if (u.plannedWell) this.drawWell(u.plannedWell.r, u.plannedWell.c, true);
                     }
                 }
 
@@ -4045,20 +4132,20 @@
                     }
                 }
 
-                // Dark Conclave aura: purple glow on tiles inside the triangle + border.
-                // Only visible during the owning player's planning phase so it
-                // doesn't reveal positions to the opponent.
-                if (game._conclaveAreas && (game.phase === 'PLAN_P1' || game.phase === 'PLAN_P2')) {
-                    let planningPlayer = game.phase === 'PLAN_P1' ? 1 : 2;
-                    for (let ca of game._conclaveAreas) {
-                        if (ca.player !== planningPlayer) continue;
-                        let pulse = 0.3 + 0.2 * Math.sin(performance.now() / 600);
-                        // Glow on each tile in the area
-                        for (let key of ca.tiles) {
-                            let [tr, tc] = key.split(',').map(Number);
-                            let [hx, hy] = this.isoCenter(tr, tc);
+                // Rain of Arrows: amber zone with falling arrow streaks along
+                // the row/col shared by 3+ Archers loosing a volley. Visible
+                // only during owner's planning + during resolve (same hidden-
+                // maintenance pattern as Ley Line).
+                if (game._rainZones && game._rainZones.length && game.phase !== 'ACTION_RESOLVE'
+                    && !game.phase.startsWith('HANDOFF')) {
+                    let now = performance.now();
+                    for (let zone of game._rainZones) {
+                        for (let i = 0; i < (zone.axis === 'row' ? COLS : ROWS); i++) {
+                            let r = zone.axis === 'row' ? zone.index : i;
+                            let c = zone.axis === 'row' ? i : zone.index;
+                            let [hx, hy] = this.isoCenter(r, c);
                             this.ctx.save();
-                            this.ctx.fillStyle = `rgba(120,50,180,${pulse * 0.2})`;
+                            this.ctx.fillStyle = 'rgba(220, 170, 80, 0.18)';
                             this.ctx.beginPath();
                             this.ctx.moveTo(hx, hy - ISO_TH);
                             this.ctx.lineTo(hx + ISO_TW, hy);
@@ -4067,32 +4154,92 @@
                             this.ctx.closePath();
                             this.ctx.fill();
                             this.ctx.restore();
+                            // Falling arrow streaks (3 streaks per tile, animated)
+                            this.ctx.save();
+                            this.ctx.strokeStyle = 'rgba(255, 200, 100, 0.85)';
+                            this.ctx.lineWidth = 1.5;
+                            for (let j = 0; j < 3; j++) {
+                                let phase = ((now / 280) + j * 0.33 + (r + c) * 0.17) % 1;
+                                let sx = hx + (j - 1) * ISO_TW * 0.35;
+                                let sy = hy - ISO_TH - 14 + phase * 28;
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(sx, sy);
+                                this.ctx.lineTo(sx + 2, sy + 8);
+                                this.ctx.stroke();
+                            }
+                            this.ctx.restore();
                         }
-                        // Triangle edges between adepts
-                        let pts = ca.adepts.map(u => {
-                            let r = u.plannedR != null ? u.plannedR : u.r;
-                            let c = u.plannedC != null ? u.plannedC : u.c;
-                            return this.isoCenter(r, c);
-                        });
-                        this.ctx.save();
-                        this.ctx.strokeStyle = `rgba(160,80,220,${pulse * 0.8})`;
-                        this.ctx.lineWidth = 2;
-                        this.ctx.beginPath();
-                        this.ctx.moveTo(pts[0][0], pts[0][1]);
-                        this.ctx.lineTo(pts[1][0], pts[1][1]);
-                        this.ctx.lineTo(pts[2][0], pts[2][1]);
-                        this.ctx.closePath();
-                        this.ctx.stroke();
-                        this.ctx.restore();
                     }
                 }
 
-                // Show revealed traps (from Dark Conclave) — only during planning
-                let showRevealed = game.phase === 'PLAN_P1' || game.phase === 'PLAN_P2';
-                let revealPlayer = game.phase === 'PLAN_P1' ? 1 : 2;
-                for (let trap of game.traps) {
-                    if (trap._revealed && showRevealed && trap.player !== revealPlayer) {
-                        this.drawTrap(trap.r, trap.c, false);
+                // Ley Line: glowing violet bars along the row/column shared by
+                // 2+ stationary casters. Visible to both players as a clear
+                // signal that the Weaver-channelled barrier is set.
+                if (game._leyLines && game._leyLines.length && game.phase !== 'ACTION_RESOLVE'
+                    && !game.phase.startsWith('HANDOFF')) {
+                    let pulse = 0.4 + 0.25 * Math.sin(performance.now() / 360);
+                    for (let ley of game._leyLines) {
+                        // Tint every tile on the line + draw two thick walls on its edges.
+                        for (let i = 0; i < (ley.axis === 'row' ? COLS : ROWS); i++) {
+                            let r = ley.axis === 'row' ? ley.index : i;
+                            let c = ley.axis === 'row' ? i : ley.index;
+                            let [hx, hy] = this.isoCenter(r, c);
+                            this.ctx.save();
+                            this.ctx.fillStyle = `rgba(178, 120, 230, ${pulse * 0.18})`;
+                            this.ctx.beginPath();
+                            this.ctx.moveTo(hx, hy - ISO_TH);
+                            this.ctx.lineTo(hx + ISO_TW, hy);
+                            this.ctx.lineTo(hx, hy + ISO_TH);
+                            this.ctx.lineTo(hx - ISO_TW, hy);
+                            this.ctx.closePath();
+                            this.ctx.fill();
+                            // Two wall edges per tile, depending on axis.
+                            this.ctx.strokeStyle = `rgba(210, 150, 255, ${0.6 + pulse * 0.4})`;
+                            this.ctx.lineWidth = 3;
+                            if (ley.axis === 'row') {
+                                // Top wall: from left corner to top corner
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx - ISO_TW, hy);
+                                this.ctx.lineTo(hx, hy - ISO_TH);
+                                this.ctx.stroke();
+                                // Top wall: from top corner to right corner
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx, hy - ISO_TH);
+                                this.ctx.lineTo(hx + ISO_TW, hy);
+                                this.ctx.stroke();
+                                // Bottom wall: from left corner to bottom corner
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx - ISO_TW, hy);
+                                this.ctx.lineTo(hx, hy + ISO_TH);
+                                this.ctx.stroke();
+                                // Bottom wall: from bottom corner to right corner
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx, hy + ISO_TH);
+                                this.ctx.lineTo(hx + ISO_TW, hy);
+                                this.ctx.stroke();
+                            } else {
+                                // Column line: walls on left and right edges of each tile
+                                // Left wall edges
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx - ISO_TW, hy);
+                                this.ctx.lineTo(hx, hy - ISO_TH);
+                                this.ctx.stroke();
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx - ISO_TW, hy);
+                                this.ctx.lineTo(hx, hy + ISO_TH);
+                                this.ctx.stroke();
+                                // Right wall edges
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx + ISO_TW, hy);
+                                this.ctx.lineTo(hx, hy - ISO_TH);
+                                this.ctx.stroke();
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx + ISO_TW, hy);
+                                this.ctx.lineTo(hx, hy + ISO_TH);
+                                this.ctx.stroke();
+                            }
+                            this.ctx.restore();
+                        }
                     }
                 }
 
@@ -4113,6 +4260,32 @@
                             if (u.stealthed && u.player === viewPlayer) this.ctx.globalAlpha = 0.45;
                             this.drawUnit(u, isSel);
                             this.ctx.globalAlpha = savedAlpha;
+                            // Mark glyph: visible to both players once mark is
+                            // active (not on the turn it was placed).
+                            if (u._markTurnsLeft > 0 && !u._markJustSet) {
+                                let [hx, hy] = this.isoCenter(u.r, u.c);
+                                let pulse = 0.6 + 0.4 * Math.sin(performance.now() / 280);
+                                this.ctx.save();
+                                this.ctx.strokeStyle = `rgba(255, 70, 70, ${pulse})`;
+                                this.ctx.lineWidth = 2;
+                                let ringR = ISO_TW * 0.42;
+                                this.ctx.beginPath();
+                                this.ctx.arc(hx, hy - PIECE_H * 0.55, ringR, 0, Math.PI * 2);
+                                this.ctx.stroke();
+                                // Crosshair lines
+                                this.ctx.beginPath();
+                                this.ctx.moveTo(hx - ringR * 1.3, hy - PIECE_H * 0.55);
+                                this.ctx.lineTo(hx + ringR * 1.3, hy - PIECE_H * 0.55);
+                                this.ctx.moveTo(hx, hy - PIECE_H * 0.55 - ringR * 1.3);
+                                this.ctx.lineTo(hx, hy - PIECE_H * 0.55 + ringR * 1.3);
+                                this.ctx.stroke();
+                                // Tiny "MARK" label
+                                this.ctx.fillStyle = `rgba(255, 100, 100, ${pulse})`;
+                                this.ctx.font = 'bold 9px Arial';
+                                this.ctx.textAlign = 'center';
+                                this.ctx.fillText('◎', hx, hy - PIECE_H * 0.55 + 3);
+                                this.ctx.restore();
+                            }
                         }
                     }
                 }
@@ -4334,7 +4507,7 @@
                 this.ctx.restore();
             }
 
-            drawBeacon(r, c, isPreview) {
+            drawWell(r, c, isPreview) {
                 let [cx, cy] = this.isoCenter(r, c);
                 cy -= 4;
                 this.ctx.save();
@@ -6326,20 +6499,12 @@
                         scene: 'SteadyAim'
                     },
                     {
-                        name: 'Anvil & Hammer', glyph: '⚒', badgeColor: '#ff9a50',
-                        who: 'Archer + friendly Squire',
-                        trigger: 'The Archer\'s target tile is within 1 square (Chebyshev) of any friendly Squire.',
-                        effectShort: '+2 flat damage',
-                        effectLong: 'The Squire pins the enemy in place; the Archer\'s arrow deals +2 damage because the target can\'t maneuver away.',
-                        scene: 'AnvilHammer'
-                    },
-                    {
-                        name: 'Flame Arrow', glyph: '🔥', badgeColor: '#ff7a30',
-                        who: 'Archer + friendly Adept',
-                        trigger: 'An Archer and an Adept both target the exact same tile on the same turn.',
-                        effectShort: '+½ Adept Magic damage on the arrow',
-                        effectLong: 'The Adept\'s firebolt sticks to the arrow. The shot delivers its normal Piercing damage plus half the Adept\'s raw Magic damage as bonus fire.',
-                        scene: 'FlameArrow'
+                        name: 'Rain of Arrows', glyph: '☄', badgeColor: '#ffba60',
+                        who: '3+ Archers',
+                        trigger: '3 or more Archers all select "Loose Volley" AND share the same row or column. The act of Loosing forfeits each Archer\'s normal aimed shot.',
+                        effectShort: 'Row/column rain — N×2 raw Piercing per ending enemy',
+                        effectLong: 'The Archers loose a coordinated volley that turns the shared row/column into a hail of arrows. Any enemy ending the turn in that row/column takes (N × 2) raw Piercing damage minus their P defense (min 1), where N is the number of participating Archers. Stealthed Assassins bypass entirely. Friendlies pass freely. Re-select each turn to maintain — opponent can\'t see whether the rain will fall again.',
+                        scene: 'RainArrows'
                     },
                     {
                         name: 'Last Stand', glyph: '✚', badgeColor: '#e0e0ff',
@@ -6358,12 +6523,12 @@
                         scene: 'Vanguard'
                     },
                     {
-                        name: 'Arcing Firebolt', glyph: '✺', badgeColor: '#ff60a0',
-                        who: 'Two casters (Adept / Mage / Archmage)',
-                        trigger: 'Two or more casters target the same tile.',
-                        effectShort: 'Center ×2.5 + 3-of-8 splash hits',
-                        effectLong: 'The center tile takes 2.5× Magic damage. Plus 3 of the 8 surrounding tiles (randomly chosen) take a half-damage splash.',
-                        scene: 'Arcing'
+                        name: 'Ley Line', glyph: '═', badgeColor: '#b278e6',
+                        who: '2+ casters (Adept / Mage / Archmage)',
+                        trigger: 'Two or more friendly casters all select "Cast Ley Line" on the same turn AND share a row or column. Casting forfeits the caster\'s movement and attack that turn — pure channelling.',
+                        effectShort: 'Weaver wall — 15% maxHP per crossing (ignores defense)',
+                        effectLong: 'The casters channel the Weaver into a barrier on their shared row/column. Two glowing walls form on either side of the line. Any enemy whose movement path crosses a wall takes 15% of their max HP as Weaver damage — defense-ignoring. Charging or dashing through the line crosses both walls (double damage). Stealthed Assassins bypass. Friendlies of the casters pass freely. Each turn, the casters re-select "Cast Ley Line" to maintain it, or do anything else and the line drops. Maintenance is private — opponents must guess if the line is still up.',
+                        scene: 'LeyLine'
                     },
                     {
                         name: 'Focused Channeling', glyph: '◈', badgeColor: '#a080ff',
@@ -6381,30 +6546,6 @@
                         effectLong: 'The line locks shields. All Squires in the phalanx gain +2 Melee defense. Any Knight/Paladin charging INTO a phalanx tile halts on the tile before contact (no impact damage, no trample) — their charge breaks on the wall.',
                         scene: 'Phalanx'
                     },
-                    {
-                        name: 'DarkConclave', glyph: '△', badgeColor: '#b8e0ff',
-                        who: 'Three friendly Adepts (triangle)',
-                        trigger: 'Three of your Adepts form a triangle (none of the three are in a straight line together). Triangle can be any size.',
-                        effectShort: 'Reveal inside + ×2 when any two Adepts coordinate',
-                        effectLong: 'Inner sight. Any stealthed enemy inside the triangle is revealed for this turn. And when any TWO of the three Adepts target the same tile (anywhere on the board — not just inside the triangle), both firebolts deal +100% damage on that tile.',
-                        scene: 'TriangleSight'
-                    },
-                    {
-                        name: 'Twin Trap', glyph: '✸', badgeColor: '#ff9a6a',
-                        who: 'Two friendly Rogues (same tile)',
-                        trigger: 'Two friendly Rogues plant their traps on the SAME tile on the same turn.',
-                        effectShort: 'Splash expands to 5×5 + reveals stealth',
-                        effectLong: 'The combined charge blows a bigger hole: full Explosive damage on the trigger tile, half damage on every tile within 2 (full 5×5 square — 8 extra tiles vs a normal trap). And any victim caught in the blast is revealed, so a stealthed Assassin cannot hide through the explosion.',
-                        scene: 'TwinTrap'
-                    },
-                    {
-                        name: 'Beacon Mark', glyph: '🔮', badgeColor: '#b080ff',
-                        who: 'Adept + friendly Archer',
-                        trigger: 'An Adept plants a Beacon (replaces firebolt that turn). Any subsequent turn, a friendly Archer shoots into the beacon tile.',
-                        effectShort: 'Archer\'s arrow into beacon = 3× damage, any range',
-                        effectLong: 'The Adept marks a tile with a hidden violet beacon (enemy never sees it). The beacon persists as long as the Adept is alive. While it\'s active, ANY friendly Archer can fire at the beacon tile from anywhere on the board — Chebyshev range is ignored — and the arrow deals 3× Piercing damage. Re-planting a beacon moves it; if the Adept dies the beacon goes dark.',
-                        scene: 'BeaconMark'
-                    }
                 ];
             }
 
@@ -6574,16 +6715,12 @@
                     case 'Volley':         this.sceneVolley(geom, t); break;
                     case 'Accuracy':       this.sceneAccuracy(geom, t); break;
                     case 'SteadyAim':      this.sceneSteadyAim(geom, t); break;
-                    case 'AnvilHammer':    this.sceneAnvilHammer(geom, t); break;
-                    case 'FlameArrow':     this.sceneFlameArrow(geom, t); break;
                     case 'LastStand':      this.sceneLastStand(geom, t); break;
                     case 'Vanguard':       this.sceneVanguard(geom, t); break;
-                    case 'Arcing':         this.sceneArcing(geom, t); break;
+                    case 'LeyLine':        this.sceneLeyLine(geom, t); break;
+                    case 'RainArrows':     this.sceneRainArrows(geom, t); break;
                     case 'FocusedChan':    this.sceneFocusedChan(geom, t); break;
                     case 'Phalanx':        this.scenePhalanx(geom, t); break;
-                    case 'TriangleSight':  this.sceneTriangleSight(geom, t); break;
-                    case 'TwinTrap':       this.sceneTwinTrap(geom, t); break;
-                    case 'BeaconMark':     this.sceneBeaconMark(geom, t); break;
                 }
 
                 // Caption pulled from amp description
@@ -6726,57 +6863,6 @@
                 if (t > 0.65) this.drawAmpFloatText(g, 3, 2, (t - 0.65) / 0.35, '+2', '#b0f0ff');
             }
 
-            sceneAnvilHammer(g, t) {
-                // Friendly Squire at (2,1) pinning enemy Knight at (3,1).
-                // Archer at (0,1) fires at (3,1): target within 1 of Squire → +2.
-                this.drawAmpUnit(g, 0, 1, 'Archer', 'A');
-                this.drawAmpUnit(g, 2, 1, 'Squire', 'A', {label: 'anvil', labelColor: '#ff9a50'});
-                this.drawAmpUnit(g, 3, 1, 'Knight', 'B', {label: 'pinned', labelColor: '#ff9a50'});
-                // Pin aura around knight
-                let {gx, gy, cell} = g;
-                this.ctx.fillStyle = 'rgba(255,154,80,0.15)';
-                this.ctx.fillRect(gx + 0 * cell, gy + 2 * cell, cell * 3, cell * 2);
-                this.ctx.strokeStyle = 'rgba(255,154,80,0.5)';
-                this.ctx.setLineDash([6, 4]);
-                this.ctx.strokeRect(gx + 0 * cell, gy + 2 * cell, cell * 3, cell * 2);
-                this.ctx.setLineDash([]);
-                if (t > 0.3) {
-                    let p = Math.min(1, (t - 0.3) / 0.35);
-                    let ar = 0 + 3 * p;
-                    this.drawAmpArrow(g, 0, 1, ar, 1, '#ff9a50', 3);
-                }
-                if (t > 0.65) this.drawAmpPulse(g, 3, 1, (t - 0.65) / 0.35, '#ff9a50');
-                if (t > 0.7) this.drawAmpFloatText(g, 3, 1, (t - 0.7) / 0.3, '+2', '#ff9a50');
-            }
-
-            sceneFlameArrow(g, t) {
-                // Archer (0,1), Adept (0,3). Both target (3,2).
-                this.drawAmpUnit(g, 0, 1, 'Archer', 'A');
-                this.drawAmpUnit(g, 0, 3, 'Adept', 'A');
-                this.drawAmpUnit(g, 3, 2, 'Rogue', 'B');
-                // Both aim converging
-                if (t > 0.25) {
-                    let p = Math.min(1, (t - 0.25) / 0.35);
-                    this.drawAmpArrow(g, 0, 1, 0 + 3 * p, 1 + 1 * p, '#ffe0a0', 2);
-                    this.drawAmpArrow(g, 0, 3, 0 + 3 * p, 3 - 1 * p, '#ff7a30', 3);
-                }
-                if (t > 0.6) {
-                    this.drawAmpPulse(g, 3, 2, (t - 0.6) / 0.4, '#ff7a30');
-                    // Fire glow
-                    let {gx, gy, cell} = g;
-                    let x = gx + 2.5 * cell;
-                    let y = gy + 3.5 * cell;
-                    let grd = this.ctx.createRadialGradient(x, y, 2, x, y, cell * 0.7);
-                    grd.addColorStop(0, 'rgba(255,180,60,0.6)');
-                    grd.addColorStop(1, 'rgba(255,80,0,0)');
-                    this.ctx.fillStyle = grd;
-                    this.ctx.beginPath();
-                    this.ctx.arc(x, y, cell * 0.7, 0, Math.PI * 2);
-                    this.ctx.fill();
-                }
-                if (t > 0.7) this.drawAmpFloatText(g, 3, 2, (t - 0.7) / 0.3, 'Fire +', '#ff7a30');
-            }
-
             sceneLastStand(g, t) {
                 // Squire at (2,2) all alone (no allies in 3x3 around it).
                 // Enemies threaten from (3,1) and (3,2). Shield glow + cleave.
@@ -6859,43 +6945,103 @@
                 }
             }
 
-            sceneArcing(g, t) {
-                // Two Adepts at (0,1) and (0,3) both target (2,2).
-                this.drawAmpUnit(g, 0, 1, 'Adept', 'A');
-                this.drawAmpUnit(g, 0, 3, 'Adept', 'A');
-                this.drawAmpUnit(g, 2, 2, 'Knight', 'B');
-                // Mark 8 splash candidates
+            sceneRainArrows(g, t) {
+                // Three Archers at (0,1), (0,2), (0,3) all loosing volleys.
+                // Row 0 becomes the rain zone. Knight enters from row 4 and
+                // ends in row 0; takes 6 raw P damage on arrival.
                 let {gx, gy, cell} = g;
-                const splashOffsets = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
-                // Pick 3 of 8 (stable per half-second cycle for visual calm)
-                let seed = Math.floor(t * 3);
-                let pickedIdx = [(seed*3)%8, (seed*3+2)%8, (seed*3+5)%8];
-                for (let i = 0; i < 8; i++) {
-                    let [dr, dc] = splashOffsets[i];
-                    let rr = 2 + dr, cc = 2 + dc;
-                    if (rr < 0 || rr >= 5 || cc < 0 || cc >= 5) continue;
-                    let isPicked = pickedIdx.includes(i);
-                    this.ctx.fillStyle = isPicked ? 'rgba(255,96,160,0.35)' : 'rgba(255,96,160,0.08)';
-                    this.ctx.fillRect(gx + cc * cell, gy + rr * cell, cell, cell);
-                    if (isPicked) {
-                        this.ctx.strokeStyle = '#ff60a0';
-                        this.ctx.lineWidth = 2;
-                        this.ctx.setLineDash([4, 4]);
-                        this.ctx.strokeRect(gx + cc * cell + 2, gy + rr * cell + 2, cell - 4, cell - 4);
-                        this.ctx.setLineDash([]);
+                // Tint row 0
+                this.ctx.fillStyle = 'rgba(220, 170, 80, 0.22)';
+                this.ctx.fillRect(gx, gy, cell * 5, cell);
+                // Falling arrow streaks across the row
+                let now = performance.now();
+                this.ctx.strokeStyle = '#ffd070';
+                this.ctx.lineWidth = 2;
+                for (let c = 0; c < 5; c++) {
+                    for (let j = 0; j < 4; j++) {
+                        let phase = ((now / 250) + j * 0.25 + c * 0.13) % 1;
+                        let sx = gx + (c + 0.2 + j * 0.2) * cell;
+                        let sy = gy - 10 + phase * (cell + 10);
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(sx, sy);
+                        this.ctx.lineTo(sx + 3, sy + 12);
+                        this.ctx.stroke();
                     }
                 }
-                // Firebolt beams converge
-                if (t > 0.25) {
-                    let p = Math.min(1, (t - 0.25) / 0.3);
-                    this.drawAmpArrow(g, 0, 1, 0 + 2 * p, 1 + 1 * p, '#ff60a0', 3);
-                    this.drawAmpArrow(g, 0, 3, 0 + 2 * p, 3 - 1 * p, '#ff60a0', 3);
+                // Archers
+                this.drawAmpUnit(g, 0, 1, 'Archer', 'A');
+                this.drawAmpUnit(g, 0, 2, 'Archer', 'A');
+                this.drawAmpUnit(g, 0, 3, 'Archer', 'A');
+                // Knight walks in from row 4 → row 0
+                let kr = 4;
+                if (t > 0.15 && t < 0.85) {
+                    let p = (t - 0.15) / 0.70;
+                    kr = 4 - 4 * p;
+                } else if (t >= 0.85) {
+                    kr = 0;
                 }
-                if (t > 0.55) {
-                    let pt = (t - 0.55) / 0.45;
-                    this.drawAmpPulse(g, 2, 2, pt, '#ff60a0');
+                this.drawAmpUnit(g, kr, 2, 'Knight', 'B');
+                if (t > 0.85) {
+                    let pt = (t - 0.85) / 0.15;
+                    this.drawAmpPulse(g, 0, 2, pt, '#ffd070');
+                    this.drawAmpFloatText(g, 0, 2, pt, '-3', '#ffd070');
                 }
-                if (t > 0.6) this.drawAmpFloatText(g, 2, 2, (t - 0.6) / 0.4, 'x2.5', '#ff60a0');
+                this.ctx.fillStyle = '#ffd070';
+                this.ctx.font = 'bold 13px Arial';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('3 Archers loosing volley → 6 raw P / ending enemy', gx + 2.5 * cell, gy - 8);
+            }
+
+            sceneLeyLine(g, t) {
+                // Two stationary casters at (1,1) and (1,3) lock row 1.
+                // Enemy Knight at (4,2) charges through; visual shows the two
+                // walls glowing and damage popping as the Knight crosses.
+                let {gx, gy, cell} = g;
+                // Tint the entire row 1
+                let pulse = 0.3 + 0.2 * Math.abs(Math.sin(t * 8));
+                this.ctx.fillStyle = `rgba(178,120,230,${pulse * 0.25})`;
+                this.ctx.fillRect(gx, gy + 1 * cell, cell * 5, cell);
+                // Two walls — top and bottom edges of row 1
+                this.ctx.strokeStyle = `rgba(210,150,255,${0.7 + pulse * 0.3})`;
+                this.ctx.lineWidth = 4;
+                this.ctx.beginPath();
+                this.ctx.moveTo(gx, gy + 1 * cell);
+                this.ctx.lineTo(gx + 5 * cell, gy + 1 * cell);
+                this.ctx.stroke();
+                this.ctx.beginPath();
+                this.ctx.moveTo(gx, gy + 2 * cell);
+                this.ctx.lineTo(gx + 5 * cell, gy + 2 * cell);
+                this.ctx.stroke();
+                // Casters
+                this.drawAmpUnit(g, 1, 1, 'Adept', 'A', {label: 'stationary', labelColor: '#d8b8ff'});
+                this.drawAmpUnit(g, 1, 3, 'Mage', 'A', {label: 'stationary', labelColor: '#d8b8ff'});
+                // Knight charges row 4 → row 2 → would-pass row 1 → row 0.
+                // Animate it sliding through both walls.
+                let kr = 4;
+                if (t > 0.15 && t < 0.85) {
+                    let p = (t - 0.15) / 0.70;
+                    kr = 4 - 4 * p;
+                } else if (t >= 0.85) {
+                    kr = 0;
+                }
+                this.drawAmpUnit(g, kr, 2, 'Knight', 'B');
+                // Damage pop at bottom wall (crosses row 2 → row 1)
+                if (t > 0.40 && t < 0.55) {
+                    let pt = (t - 0.40) / 0.15;
+                    this.drawAmpPulse(g, 2, 2, pt, '#d8b8ff');
+                    this.drawAmpFloatText(g, 2, 2, pt, '-15%', '#e0c0ff');
+                }
+                // Damage pop at top wall (crosses row 1 → row 0)
+                if (t > 0.65 && t < 0.85) {
+                    let pt = (t - 0.65) / 0.20;
+                    this.drawAmpPulse(g, 1, 2, pt, '#d8b8ff');
+                    this.drawAmpFloatText(g, 1, 2, pt, '-15%', '#e0c0ff');
+                }
+                // Caption
+                this.ctx.fillStyle = '#d8b8ff';
+                this.ctx.font = 'bold 13px Arial';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('Charging through = 2 walls = 30% maxHP', gx + 2.5 * cell, gy - 8);
             }
 
             sceneFocusedChan(g, t) {
@@ -6970,186 +7116,6 @@
                 this.ctx.font = 'bold 13px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Charge breaks on the shield wall', gx + 2.5 * cell, gy - 8);
-            }
-
-            sceneTriangleSight(g, t) {
-                // Three Adepts forming a triangle: (0,0), (0,4), (2,2).
-                // Hidden Assassin lurking at (1,2) inside the triangle — revealed.
-                // Two Adepts ((0,0) and (0,4)) coordinate on (3,2), a Knight target.
-                let {gx, gy, cell} = g;
-                // Filled triangle interior shading
-                this.ctx.save();
-                this.ctx.fillStyle = 'rgba(184,224,255,0.14)';
-                this.ctx.beginPath();
-                let p0 = {x: gx + 0.5 * cell, y: gy + 0.5 * cell};
-                let p1 = {x: gx + 4.5 * cell, y: gy + 0.5 * cell};
-                let p2 = {x: gx + 2.5 * cell, y: gy + 2.5 * cell};
-                this.ctx.moveTo(p0.x, p0.y);
-                this.ctx.lineTo(p1.x, p1.y);
-                this.ctx.lineTo(p2.x, p2.y);
-                this.ctx.closePath();
-                this.ctx.fill();
-                this.ctx.strokeStyle = 'rgba(184,224,255,0.55)';
-                this.ctx.lineWidth = 2;
-                this.ctx.setLineDash([6, 4]);
-                this.ctx.stroke();
-                this.ctx.setLineDash([]);
-                this.ctx.restore();
-                // Adepts
-                this.drawAmpUnit(g, 0, 0, 'Adept', 'A');
-                this.drawAmpUnit(g, 0, 4, 'Adept', 'A');
-                this.drawAmpUnit(g, 2, 2, 'Adept', 'A');
-                // Revealed Assassin inside the triangle (flickers in)
-                let flick = 0.35 + 0.35 * Math.abs(Math.sin(t * 12));
-                this.ctx.save();
-                this.ctx.globalAlpha = flick;
-                this.drawAmpUnit(g, 1, 2, 'Assassin', 'B', {label: 'revealed', labelColor: '#b8e0ff'});
-                this.ctx.restore();
-                // Target Knight
-                this.drawAmpUnit(g, 3, 2, 'Knight', 'B', {label: '×2 each', labelColor: '#b8e0ff'});
-                // Two coordinated firebolts from (0,0) and (0,4) to (3,2)
-                if (t > 0.30) {
-                    let p = Math.min(1, (t - 0.30) / 0.25);
-                    this.drawAmpArrow(g, 0, 0, 0 + 3 * p, 0 + 2 * p, '#b8e0ff', 3);
-                    this.drawAmpArrow(g, 0, 4, 0 + 3 * p, 4 - 2 * p, '#b8e0ff', 3);
-                }
-                if (t > 0.55) {
-                    let pt = Math.min(1, (t - 0.55) / 0.35);
-                    this.drawAmpPulse(g, 3, 2, pt, '#b8e0ff');
-                    this.drawAmpPulse(g, 3, 2, Math.max(0, pt - 0.2), '#ffffff');
-                }
-                // Caption
-                this.ctx.fillStyle = '#b8e0ff';
-                this.ctx.font = 'bold 13px Arial';
-                this.ctx.textAlign = 'center';
-                this.ctx.fillText('Inner sight — triangle reveals, paired strikes ×2', gx + 2.5 * cell, gy - 8);
-            }
-
-            sceneTwinTrap(g, t) {
-                // Two Rogues at (0,1) and (0,3) both plant on (2,2).
-                // Enemy Knight walks into it; splash covers a 5x5 square.
-                let {gx, gy, cell} = g;
-                // Pre-detonation: show 5x5 AOE as faint red region on (0..4, 0..4).
-                // Actually full 5x5 = radius 2, meaning center (2,2) + 24 surrounding.
-                // Since the grid IS 5x5, essentially the whole board is the AOE.
-                // Restrict visual to the 5x5 centered on (2,2): here it fills the grid.
-                if (t > 0.35) {
-                    let pulse = 0.10 + 0.08 * Math.abs(Math.sin(t * 10));
-                    this.ctx.fillStyle = `rgba(255,154,106,${pulse})`;
-                    this.ctx.fillRect(gx, gy, cell * 5, cell * 5);
-                    // Inner (full damage) tile
-                    this.ctx.fillStyle = 'rgba(255,154,106,0.30)';
-                    this.ctx.fillRect(gx + 2 * cell, gy + 2 * cell, cell, cell);
-                }
-                // Rogues
-                this.drawAmpUnit(g, 0, 1, 'Rogue', 'A');
-                this.drawAmpUnit(g, 0, 3, 'Rogue', 'A');
-                // Plant arrows converging on (2,2)
-                if (t < 0.35) {
-                    let p = Math.min(1, t / 0.30);
-                    this.drawAmpArrow(g, 0, 1, 0 + 2 * p, 1 + 1 * p, '#ff9a6a', 2);
-                    this.drawAmpArrow(g, 0, 3, 0 + 2 * p, 3 - 1 * p, '#ff9a6a', 2);
-                }
-                // Planted trap marker (little glyph at center)
-                if (t > 0.32) {
-                    let x = gx + 2.5 * cell, y = gy + 2.5 * cell;
-                    this.ctx.fillStyle = '#ff9a6a';
-                    this.ctx.font = 'bold 16px Arial';
-                    this.ctx.textAlign = 'center';
-                    this.ctx.textBaseline = 'middle';
-                    this.ctx.fillText('✸', x, y);
-                    this.ctx.textBaseline = 'alphabetic';
-                }
-                // Victim walks into the trap (Knight from (4,2) to (2,2))
-                if (t > 0.50) {
-                    let p = Math.min(1, (t - 0.50) / 0.25);
-                    let endR = 4 - 2 * p;
-                    this.drawAmpUnit(g, endR, 2, 'Knight', 'B');
-                } else if (t > 0.32) {
-                    this.drawAmpUnit(g, 4, 2, 'Knight', 'B');
-                }
-                // Detonation pulses across 5x5
-                if (t > 0.78) {
-                    let pt = Math.min(1, (t - 0.78) / 0.22);
-                    this.drawAmpPulse(g, 2, 2, pt, '#ffba88');
-                    // Revealed Assassin flash
-                    this.drawAmpFloatText(g, 2, 2, pt, 'REVEAL', '#ffba88');
-                    // Splash ripples on outer ring
-                    let ringTiles = [[0,0],[0,4],[4,0],[4,4],[2,0],[2,4],[0,2],[4,2]];
-                    for (let [rr, cc] of ringTiles) {
-                        this.drawAmpPulse(g, rr, cc, Math.min(1, pt + 0.1), '#ff9a6a');
-                    }
-                }
-                // Caption
-                this.ctx.fillStyle = '#ff9a6a';
-                this.ctx.font = 'bold 13px Arial';
-                this.ctx.textAlign = 'center';
-                this.ctx.fillText('5×5 explosion — half damage across the whole square', gx + 2.5 * cell, gy - 8);
-            }
-
-            sceneBeaconMark(g, t) {
-                // Adept at (0,0) plants beacon at (4,4). Archer at (0,2)
-                // fires across the board into the beacon, 3× damage.
-                let {gx, gy, cell} = g;
-                // Beacon tile glow (pulses the whole time after plant)
-                if (t > 0.20) {
-                    let pulse = 0.25 + 0.15 * Math.abs(Math.sin(t * 9));
-                    this.ctx.fillStyle = `rgba(176,128,255,${pulse})`;
-                    this.ctx.fillRect(gx + 4 * cell, gy + 4 * cell, cell, cell);
-                    // reticle
-                    let cx = gx + 4.5 * cell, cy = gy + 4.5 * cell;
-                    this.ctx.strokeStyle = '#d8b8ff';
-                    this.ctx.lineWidth = 1.5;
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(cx - cell * 0.35, cy); this.ctx.lineTo(cx - cell * 0.12, cy);
-                    this.ctx.moveTo(cx + cell * 0.12, cy); this.ctx.lineTo(cx + cell * 0.35, cy);
-                    this.ctx.moveTo(cx, cy - cell * 0.35); this.ctx.lineTo(cx, cy - cell * 0.12);
-                    this.ctx.moveTo(cx, cy + cell * 0.12); this.ctx.lineTo(cx, cy + cell * 0.35);
-                    this.ctx.stroke();
-                    // Glyph in center
-                    this.ctx.fillStyle = '#f0e0ff';
-                    this.ctx.font = 'bold 14px Arial';
-                    this.ctx.textAlign = 'center';
-                    this.ctx.textBaseline = 'middle';
-                    this.ctx.fillText('🔮', cx, cy);
-                    this.ctx.textBaseline = 'alphabetic';
-                }
-                // Adept and Archer (friendly)
-                this.drawAmpUnit(g, 0, 0, 'Adept', 'A');
-                this.drawAmpUnit(g, 0, 2, 'Archer', 'A');
-                // Phase 1 (0..0.20): Adept casts beacon — violet arc out to (4,4)
-                if (t < 0.20) {
-                    let p = Math.min(1, t / 0.20);
-                    this.drawAmpArrow(g, 0, 0, 4 * p, 4 * p, '#b080ff', 2);
-                }
-                // Phase 2 (0.20..0.55): enemy Knight walks onto beacon tile
-                let knightR = 4, knightC = 2;
-                if (t > 0.20 && t < 0.55) {
-                    let p = (t - 0.20) / 0.35;
-                    knightR = 4;
-                    knightC = 2 + 2 * p;
-                    this.drawAmpUnit(g, knightR, knightC, 'Knight', 'B');
-                } else if (t >= 0.55) {
-                    this.drawAmpUnit(g, 4, 4, 'Knight', 'B');
-                } else {
-                    this.drawAmpUnit(g, 4, 2, 'Knight', 'B');
-                }
-                // Phase 3 (0.55..0.85): Archer fires across the board into beacon
-                if (t > 0.55 && t < 0.85) {
-                    let p = (t - 0.55) / 0.30;
-                    this.drawAmpArrow(g, 0, 2, 4 * p, 2 + 2 * p, '#ffe080', 2);
-                }
-                // Phase 4 (0.85..1.0): impact — 3× damage float
-                if (t > 0.85) {
-                    let pt = Math.min(1, (t - 0.85) / 0.15);
-                    this.drawAmpPulse(g, 4, 4, pt, '#ffd070');
-                    this.drawAmpFloatText(g, 4, 4, pt, '×3', '#ffd070');
-                }
-                // Caption
-                this.ctx.fillStyle = '#b080ff';
-                this.ctx.font = 'bold 13px Arial';
-                this.ctx.textAlign = 'center';
-                this.ctx.fillText('Beacon planted — Archer hits 3× from any distance', gx + 2.5 * cell, gy - 8);
             }
 
             drawTutorialUnit(type) {
@@ -8168,7 +8134,7 @@
                               rule: 'When no friendlies are within 1 tile, this Squire digs in: +3 Me defense and a bonus cleave (1 adjacent enemy hit for half).' },
                             { name: 'Vanguard ➤ (amplifier)',
                               dmg:  '+1 move next turn',
-                              rule: 'Landing a killing blow grants this Squire +1 movement on the following turn. Also enables Anvil & Hammer and Steady Aim for nearby Archers.' }
+                              rule: 'Landing a killing blow grants this Squire +1 movement on the following turn. Also enables Steady Aim for nearby Archers.' }
                         ]
                     },
                     Knight: {
@@ -8180,6 +8146,9 @@
                             { name: 'Charge (move 2 straight)',
                               dmg:  '16 Melee to main + 4 Melee to cleave + 4 Melee trample',
                               rule: 'Move 2 squares in a straight line then attack — main target takes DOUBLE damage, the cleaved neighbour takes HALF, and any lighter enemy standing on the mid-tile you rode through takes HALF (trample). You can aim the charge at an enemy-occupied square: lighter defenders get bumped aside, equal-weight defenders resolve by HP.' },
+                            { name: 'Winded (after charge)',
+                              dmg:  '—',
+                              rule: 'After a successful charge, this Knight is winded for one turn — no charging the next turn. Normal 1-tile movement is still allowed. Paladins are not affected.' },
                             { name: 'Ironfoot (passive)',
                               dmg:  '—',
                               rule: 'Even a 1-tile move can push lighter enemies off their tile. Other units bounce off stationary defenders, but Knights are heavy enough to contest any space they step into.' },
@@ -8229,12 +8198,9 @@
                             { name: 'Steady Aim ✦ (amplifier)',
                               dmg:  '+2 flat Piercing',
                               rule: 'When a friendly Squire stands directly in front of this Archer, the arrow gets +2 damage.' },
-                            { name: 'Anvil & Hammer ⚒ (amplifier)',
-                              dmg:  '+2 flat damage',
-                              rule: 'Aim at a tile within 1 square of a friendly Squire — the pinned target takes +2 damage.' },
-                            { name: 'Flame Arrow 🔥 (amplifier)',
-                              dmg:  '+½ Adept magic damage',
-                              rule: 'If a friendly Adept is targeting the same tile as this Archer, the arrow ignites — adding half of the Adept\'s Magic damage on top.' }
+                            { name: 'Loose Volley ☄ (Rain of Arrows)',
+                              dmg:  'Channels — no individual shot this turn',
+                              rule: 'Forfeits aimed shot to participate in a Rain of Arrows. When 3+ Archers Loose Volley on the same row or column, that whole row/column rains down N×2 raw Piercing damage on every enemy ending the turn there. Re-select each turn to maintain.' }
                         ]
                     },
                     Rogue: {
@@ -8245,7 +8211,13 @@
                               rule: 'Pick any tile within Chebyshev 3 of your planned position. The arrow strikes whoever is on that tile at resolve time.' },
                             { name: 'Plant Trap',
                               dmg:  '9 Explosive damage when triggered',
-                              rule: 'Place an explosive on any in-bounds tile instead of attacking — detonates when an enemy steps on it.' }
+                              rule: 'Place an explosive on any in-bounds tile instead of attacking — detonates when an enemy steps on it.' },
+                            { name: 'Poisoned Dart (passive)',
+                              dmg:  '×1.5 damage on wounded targets',
+                              rule: 'When this Rogue strikes a target whose current HP is below 50% of their max, damage is multiplied by 1.5. Applies to every Rogue attack — aimed shot, reaction shot, anything.' },
+                            { name: 'Reaction Shot (passive)',
+                              dmg:  '8 Piercing (free, in addition to planned attack)',
+                              rule: 'Any enemy that ends within 1 tile of this Rogue at the end of resolve triggers a free Piercing shot. Picks the closest enemy; ties broken by lowest HP. Stacks with the Rogue\'s normal planned attack.' }
                         ]
                     },
                     Assassin: {
@@ -8259,7 +8231,13 @@
                               rule: 'Vanish from the opponent\'s view for the next turn instead of attacking.' },
                             { name: 'Shadow Strike',
                               dmg:  'Instant kill (one-shot)',
-                              rule: 'Pick a tile adjacent to your move destination — if an enemy ends there and you end up behind it, the target dies outright.' }
+                              rule: 'Pick a tile adjacent to your move destination — if an enemy ends there and you end up behind it, the target dies outright.' },
+                            { name: 'Death Save (passive)',
+                              dmg:  '—',
+                              rule: 'Once per match, if any damage this Assassin takes during a turn would be lethal, ALL damage that turn is cancelled — HP returns to where it was at the start of the turn and they ignore further hits for the rest of resolution. The save is consumed on first use; afterward they die normally.' },
+                            { name: 'Mark Target ◎',
+                              dmg:  'Halves target P def for 2 turns',
+                              rule: 'Spend a turn (no aimed shot, no Shadow Strike) to mark any enemy within Cheb 3. Mark is hidden during this turn\'s planning and revealed at end of resolve. For the next 2 turns, all friendly Piercing attacks (Archer arrows, Rogue arrows + traps, Assassin arrows, Rain of Arrows) treat the marked target\'s P defense as halved (rounded down). Mark fades if the marking Assassin dies.' }
                         ]
                     },
                     Adept: {
@@ -8267,16 +8245,13 @@
                         abilities: [
                             { name: 'Firebolt',
                               dmg:  '6 Magic (3 Magic on pierced target)',
-                              rule: 'Directional magic bolt — range 3, straight or diagonal. Pierces the first target for half, continues through. Adepts can\'t lob fire, they must aim a line.' },
-                            { name: 'Arcing Firebolt ✺ (amplifier)',
-                              dmg:  'Center ×2.5 + 3 splash hits',
-                              rule: 'If another Adept (or Mage / Archmage) targets the same tile, the bolts arc together — center target takes 2.5× damage, and 3 of 8 surrounding tiles get a half-damage splash.' },
+                              rule: 'Directional magic bolt — range 2, straight or diagonal. Pierces the first target for half, continues through. Adepts can\'t lob fire, they must aim a line.' },
                             { name: 'Focused Channeling ◈ (amplifier)',
                               dmg:  '+1 flat Magic per stack (max 5)',
                               rule: 'Each turn the Adept holds position (doesn\'t move), Magic damage gains +1 flat stacking bonus. Resets the moment they move.' },
-                            { name: 'Dark Conclave ⛧ (amplifier)',
-                              dmg:  '+3 Magic damage',
-                              rule: '3 Adepts in a right triangle formation. Each gets +3 Magic damage. The area inside the triangle + 1 tile around each Adept reveals stealthed enemies and hidden traps. Be careful — firebolts hit the first thing in their path, including your own conclave members!' }
+                            { name: 'Ley Line ═ (amplifier)',
+                              dmg:  '15% maxHP per wall crossed (defense-ignoring)',
+                              rule: 'Activate by selecting "Cast Ley Line" — the caster channels (no movement, no attack). When 2+ same-team channelers share a row or column, two Weaver walls form on either side. Crossing enemies take 15% maxHP per wall (charges through both = 30%). Stealth bypasses; friendlies pass freely. Re-select each turn to maintain — opponent can\'t see whether you will.' }
                         ]
                     },
                     Mage: {
@@ -8285,9 +8260,12 @@
                             { name: 'Targeted Firebolt',
                               dmg:  '10 Magic',
                               rule: 'Pick a tile within Chebyshev 3. Fireball strikes whoever ends up on that tile. No pass-through — the Mage\'s precision trades AOE for accuracy.' },
-                            { name: 'Arcing Firebolt ✺ (amplifier)',
-                              dmg:  'Center ×2.5 + 3 splash hits',
-                              rule: 'Can share a target tile with an Adept, another Mage, or an Archmage — center takes 2.5× damage, and 3 of 8 surrounding tiles get a half-damage splash.' }
+                            { name: 'Gravity Well 🌀',
+                              dmg:  'Movement debuff (no damage)',
+                              rule: 'Plant a well on a tile within Chebyshev 3 (replaces firebolt). The well lasts 2 turns. Any enemy whose movement path crosses the well tile has its movement capped to 1 step that turn. Friendlies are unaffected.' },
+                            { name: 'Ley Line ═ (amplifier)',
+                              dmg:  '15% maxHP per wall crossed (defense-ignoring)',
+                              rule: 'Select "Cast Ley Line" (forfeits firebolt + locks in place). When 2+ casters do so on the same row or column, two Weaver walls form. Crossing enemies take 15% maxHP per wall. Re-select each turn to maintain.' }
                         ]
                     },
                     Archmage: {
@@ -8299,9 +8277,9 @@
                             { name: 'Channel → Rain Fire → Blink',
                               dmg:  'Center 14 Magic + 4 random splashes at 7 Magic',
                               rule: 'Spend 1 turn channeling, next turn drop a 3×3 AOE anywhere within 6 tiles, the following turn Blink up to 5 tiles to an empty square.' },
-                            { name: 'Arcing Firebolt ✺ (amplifier)',
-                              dmg:  'Center ×2.5 + 3 splash hits',
-                              rule: 'Basic firebolt can share a target tile with an Adept or Mage — center takes 2.5× damage, and 3 of 8 surrounding tiles get a half-damage splash.' }
+                            { name: 'Ley Line ═ (amplifier)',
+                              dmg:  '15% maxHP per wall crossed (defense-ignoring)',
+                              rule: 'Select "Cast Ley Line" to channel — forfeits firebolt + locks in place. When 2+ casters on the same row/column do so, two Weaver walls form. Charges through pay 2× damage. Re-select each turn to maintain.' }
                         ]
                     }
                 };
@@ -9002,15 +8980,24 @@
                         if (u.type === 'Rogue') {
                             this.drawButton(game, 'ability_trap', 14, abilityY, 180, 36, '🧨 Place Trap', {color: '#a06030', font: 'bold 13px Arial'});
                         }
-                        if (u.type === 'Adept') {
-                            this.drawButton(game, 'ability_beacon', 14, abilityY, 180, 36, '🔮 Beacon', {color: '#6a4aa0', font: 'bold 13px Arial'});
+                        if (u.type === 'Mage') {
+                            this.drawButton(game, 'ability_well', 14, abilityY, 200, 36, '🌀 Gravity Well', {color: '#6a4aa0', font: 'bold 13px Arial'});
+                        }
+                        // Ley Line: any caster can channel. Button fits beside other abilities.
+                        if (u.type === 'Adept' || u.type === 'Mage' || u.type === 'Archmage') {
+                            let leyX = (u.type === 'Mage') ? 230 : 14;
+                            this.drawButton(game, 'ability_leyline', leyX, abilityY, 180, 36, '═ Cast Ley Line', {color: '#7050a8', font: 'bold 13px Arial'});
                         }
                         if (u.type === 'Assassin') {
                             if (u.stealthed) {
                                 this.drawButton(game, 'ability_strike', 14, abilityY, 200, 36, '🗡 Shadow Strike', {color: '#5a2a6a', font: 'bold 13px Arial'});
                             } else {
                                 this.drawButton(game, 'ability_vanish', 14, abilityY, 200, 36, '👻 Vanish (Stealth)', {color: '#3a3a5a', font: 'bold 13px Arial'});
+                                this.drawButton(game, 'ability_mark', 230, abilityY, 200, 36, '◎ Mark Target', {color: '#a83a3a', font: 'bold 13px Arial'});
                             }
+                        }
+                        if (u.type === 'Archer') {
+                            this.drawButton(game, 'ability_rain', 14, abilityY, 200, 36, '☄ Loose Volley', {color: '#9a6a30', font: 'bold 13px Arial'});
                         }
                         let isHeavy = u.type === 'Knight' || u.type === 'Paladin';
                         let movedOne = u.plannedR != null && u.plannedC != null
@@ -9043,10 +9030,16 @@
                         this.ctx.fillText('Click a tile within 2 squares to place your trap (no attack this turn)', 14, UI_TOP + 115);
                         this.drawButton(game, 'plan_cancel_ability', 14, UI_TOP + 130, 220, 36, '← Back to Attack', {color: '#5a5a8a'});
                         this.drawButton(game, 'plan_deselect', 250, UI_TOP + 130, 140, 36, '✕ Deselect', {color: '#7a3a3a'});
-                    } else if (game.planStep === 'BEACON') {
+                    } else if (game.planStep === 'MARK') {
+                        this.ctx.fillStyle = '#ff6060';
+                        this.ctx.font = 'bold 13px Arial';
+                        this.ctx.fillText('Click an enemy within 3 tiles. Mark exposes them — Piercing attacks halve their P def for the next 2 turns.', 14, UI_TOP + 115);
+                        this.drawButton(game, 'plan_cancel_ability', 14, UI_TOP + 130, 220, 36, '← Back to Attack', {color: '#5a5a8a'});
+                        this.drawButton(game, 'plan_deselect', 250, UI_TOP + 130, 140, 36, '✕ Deselect', {color: '#7a3a3a'});
+                    } else if (game.planStep === 'WELL') {
                         this.ctx.fillStyle = '#b080ff';
                         this.ctx.font = 'bold 13px Arial';
-                        this.ctx.fillText('Click any tile to plant your beacon (Adept skips firebolt). Friendly Archers can hit it for 3X.', 14, UI_TOP + 115);
+                        this.ctx.fillText('Click a tile within 3 to plant Gravity Well (Mage skips firebolt). Lasts 2 turns; enemies passing through move only 1 tile.', 14, UI_TOP + 115);
                         this.drawButton(game, 'plan_cancel_ability', 14, UI_TOP + 130, 220, 36, '← Back to Attack', {color: '#5a5a8a'});
                         this.drawButton(game, 'plan_deselect', 250, UI_TOP + 130, 140, 36, '✕ Deselect', {color: '#7a3a3a'});
                     } else if (game.planStep === 'AID') {
@@ -9617,14 +9610,13 @@
                             {glyph:'⇶', name:'Volley', unit:'2 Archers', desc:'Adjacent pair sweeps shared line'},
                             {glyph:'◎', name:'Accuracy', unit:'Archer', desc:'+50%/stack (max 3) if stationary + same target'},
                             {glyph:'✦', name:'Steady Aim', unit:'Archer', desc:'+2 Pierce with Squire directly in front'},
-                            {glyph:'⚒', name:'Anvil & Hammer', unit:'Archer', desc:'+2 dmg targeting near a Squire'},
-                            {glyph:'🔥', name:'Flame Arrow', unit:'Archer+Adept', desc:'Same target → arrow gains half Magic dmg'},
                             {glyph:'✚', name:'Last Stand', unit:'Squire', desc:'+3 Me def when isolated (no adjacent allies)'},
                             {glyph:'➤', name:'Vanguard', unit:'Squire', desc:'+1 move next turn after a kill'},
-                            {glyph:'✺', name:'Arcing Firebolt', unit:'2+ Magic', desc:'Same target → 2.5× center + 3 splash'},
                             {glyph:'◈', name:'Focused Chan.', unit:'Adept', desc:'+1 Magic/turn while stationary'},
+                            {glyph:'═', name:'Ley Line', unit:'2+ casters', desc:'Stationary in same row/col → Weaver wall, 15% maxHP per crossing'},
+                            {glyph:'☄', name:'Rain of Arrows', unit:'3+ Archers', desc:'Loose Volley on row/col → N×2 raw P to ending enemies'},
+                            {glyph:'◎', name:'Mark Target', unit:'Assassin', desc:'2-turn mark — halves P def for Piercing attacks'},
                             {glyph:'▥', name:'Phalanx', unit:'3+ Squires', desc:'+2 Melee def in a row/column, halts charges'},
-                            {glyph:'⛧', name:'Dark Conclave', unit:'3 Adepts', desc:'Right triangle: +3 Magic dmg, reveals stealth + traps'},
                         ];
                         let panW = 380, rowH = 17;
                         let panH = 24 + amps.length * rowH + 8;
@@ -10039,7 +10031,7 @@
                     su.plannedC = su.c;
                     su.plannedAtk = null;
                     su.plannedTrap = null;
-                    su.plannedBeacon = null;
+                    su.plannedWell = null;
                     su.plannedAid = null;
                     su.ordered = true;
                     game.selectedUnit = null;
@@ -10050,7 +10042,7 @@
             if (key === 'plan_deselect') {
                 if (game.selectedUnit) {
                     game.selectedUnit.plannedTrap = null;
-                    game.selectedUnit.plannedBeacon = null;
+                    game.selectedUnit.plannedWell = null;
                     game.selectedUnit.plannedAid = null;
                 }
                 game.selectedUnit = null;
@@ -10061,7 +10053,7 @@
                 if (game.selectedUnit && (game.planStep === 'ATTACK' || game.planStep === 'TRAP' || game.planStep === 'BEACON' || game.planStep === 'AID')) {
                     game.selectedUnit.plannedAtk = null;
                     game.selectedUnit.plannedTrap = null;
-                    game.selectedUnit.plannedBeacon = null;
+                    game.selectedUnit.plannedWell = null;
                     game.selectedUnit.plannedAid = null;
                     game.selectedUnit.ordered = true;
                     game.selectedUnit = null;
@@ -10074,7 +10066,7 @@
                     game.selectedUnit.plannedR = null;
                     game.selectedUnit.plannedC = null;
                     game.selectedUnit.plannedTrap = null;
-                    game.selectedUnit.plannedBeacon = null;
+                    game.selectedUnit.plannedWell = null;
                     game.selectedUnit.plannedAid = null;
                     game.planStep = 'MOVE';
                 }
@@ -10090,14 +10082,76 @@
                 }
                 return true;
             }
-            if (key === 'ability_beacon') {
-                if (game.selectedUnit && game.selectedUnit.type === 'Adept') {
+            if (key === 'ability_well') {
+                if (game.selectedUnit && game.selectedUnit.type === 'Mage') {
                     game.selectedUnit.plannedAtk = null;
                     game.selectedUnit.plannedTrap = null;
                     game.selectedUnit.plannedAid = null;
                     game.selectedUnit.plannedShadow = null;
                     game.selectedUnit.plannedStealth = false;
-                    game.planStep = 'BEACON';
+                    game.selectedUnit.plannedLeyLine = false;
+                    game.planStep = 'WELL';
+                }
+                return true;
+            }
+            // Mark Target (Assassin): pick an enemy within Cheb 3, no attack
+            // this turn. Mark applies at end of resolve, lasts next 2 turns.
+            if (key === 'ability_mark') {
+                let su = game.selectedUnit;
+                if (su && su.type === 'Assassin' && !su.stealthed) {
+                    su.plannedAtk = null;
+                    su.plannedTrap = null;
+                    su.plannedWell = null;
+                    su.plannedAid = null;
+                    su.plannedShadow = null;
+                    su.plannedStealth = false;
+                    su.plannedLeyLine = false;
+                    su.plannedRainArrow = false;
+                    game.planStep = 'MARK';
+                }
+                return true;
+            }
+            // Loose Volley (Archer): commit to a Rain of Arrows formation.
+            // Forces stationary + no normal attack. If 3+ archers in same
+            // row/col have plannedRainArrow set, the rain triggers.
+            if (key === 'ability_rain') {
+                let su = game.selectedUnit;
+                if (su && su.type === 'Archer') {
+                    su.plannedR = su.r;
+                    su.plannedC = su.c;
+                    su.plannedAtk = null;
+                    su.plannedTrap = null;
+                    su.plannedWell = null;
+                    su.plannedAid = null;
+                    su.plannedShadow = null;
+                    su.plannedStealth = false;
+                    su.plannedLeyLine = false;
+                    su.plannedMark = null;
+                    su.plannedRainArrow = true;
+                    su.ordered = true;
+                    game.selectedUnit = null;
+                    game.planStep = null;
+                }
+                return true;
+            }
+            // Cast Ley Line — Adept/Mage/Archmage commits to channeling. Forces
+            // stationary, no attack, no other ability. If 2+ same-team casters
+            // commit and end up in same row/col, the line forms.
+            if (key === 'ability_leyline') {
+                let su = game.selectedUnit;
+                if (su && (su.type === 'Adept' || su.type === 'Mage' || su.type === 'Archmage')) {
+                    su.plannedR = su.r;
+                    su.plannedC = su.c;
+                    su.plannedAtk = null;
+                    su.plannedTrap = null;
+                    su.plannedWell = null;
+                    su.plannedAid = null;
+                    su.plannedShadow = null;
+                    su.plannedStealth = false;
+                    su.plannedLeyLine = true;
+                    su.ordered = true;
+                    game.selectedUnit = null;
+                    game.planStep = null;
                 }
                 return true;
             }
@@ -10159,7 +10213,7 @@
             if (key === 'plan_cancel_ability') {
                 if (game.selectedUnit && (game.planStep === 'TRAP' || game.planStep === 'BEACON' || game.planStep === 'AID' || game.planStep === 'STRIKE')) {
                     game.selectedUnit.plannedTrap = null;
-                    game.selectedUnit.plannedBeacon = null;
+                    game.selectedUnit.plannedWell = null;
                     game.selectedUnit.plannedAid = null;
                     game.selectedUnit.plannedShadow = null;
                     game.selectedUnit.plannedStealth = false;
@@ -10185,7 +10239,7 @@
                         u.plannedC = u.c;
                         u.plannedAtk = null;
                         u.plannedTrap = null;
-                        u.plannedBeacon = null;
+                        u.plannedWell = null;
                         u.plannedAid = null;
                         u.plannedStealth = false;
                         u.plannedShadow = null;
@@ -10632,7 +10686,12 @@
                 plannedR: u.plannedR, plannedC: u.plannedC,
                 plannedAtk: u.plannedAtk, plannedDest: u.plannedDest,
                 plannedRain: u.plannedRain, plannedTrap: u.plannedTrap,
-                plannedBeacon: u.plannedBeacon,
+                plannedWell: u.plannedWell,
+                plannedLeyLine: u.plannedLeyLine,
+                plannedMark: u.plannedMark,
+                plannedRainArrow: u.plannedRainArrow,
+                _markTurnsLeft: u._markTurnsLeft,
+                _markJustSet: u._markJustSet,
                 plannedShadow: u.plannedShadow, plannedAid: u.plannedAid,
                 plannedStealth: u.plannedStealth, plannedBlink: u.plannedBlink,
                 plannedChannel: u.plannedChannel,
@@ -10647,6 +10706,8 @@
                 lastTargetC: u.lastTargetC,
                 focusChannelStack: u.focusChannelStack,
                 vanguardMov: u.vanguardMov,
+                _deathSaveUsed: u._deathSaveUsed,
+                _windedTurns: u._windedTurns,
                 stealthed: u.stealthed
             };
         }
@@ -10664,7 +10725,12 @@
             u.plannedDest = o.plannedDest || null;
             u.plannedRain = o.plannedRain || null;
             u.plannedTrap = o.plannedTrap || null;
-            u.plannedBeacon = o.plannedBeacon || null;
+            u.plannedWell = o.plannedWell || null;
+            u.plannedLeyLine = !!o.plannedLeyLine;
+            u.plannedMark = o.plannedMark || null;
+            u.plannedRainArrow = !!o.plannedRainArrow;
+            u._markTurnsLeft = typeof o._markTurnsLeft === 'number' ? o._markTurnsLeft : 0;
+            u._markJustSet = !!o._markJustSet;
             u.plannedShadow = o.plannedShadow || null;
             u.plannedAid = o.plannedAid || null;
             u.plannedStealth = !!o.plannedStealth;
@@ -10678,6 +10744,8 @@
             u.lastTargetC       = o.lastTargetC != null                   ? o.lastTargetC       : null;
             u.focusChannelStack = typeof o.focusChannelStack === 'number' ? o.focusChannelStack : 0;
             u.vanguardMov       = typeof o.vanguardMov === 'number'       ? o.vanguardMov       : 0;
+            u._deathSaveUsed    = !!o._deathSaveUsed;
+            u._windedTurns      = typeof o._windedTurns === 'number'      ? o._windedTurns      : 0;
             u.stealthed         = !!o.stealthed;
             return u;
         }
@@ -10695,13 +10763,13 @@
                         s.plannedR = null; s.plannedC = null;
                         s.plannedAtk = null; s.plannedDest = null;
                         s.plannedRain = null; s.plannedTrap = null;
-                        s.plannedBeacon = null;
+                        s.plannedWell = null;
                     }
                     return s;
                 }),
                 p2: game.p2Units.map(serializeUnit),
                 traps: game.traps.map(t => ({...t})),
-                beacons: game.beacons.map(b => ({player: b.player, r: b.r, c: b.c, ownerIdRef: b.ownerId ? b.ownerId.id : null})),
+                wells: game.wells.map(b => ({player: b.player, r: b.r, c: b.c, turnsLeft: b.turnsLeft, ownerIdRef: b.ownerId ? b.ownerId.id : null})),
                 stripped: !!stripP1Plans
             };
             return snap;
@@ -10716,14 +10784,14 @@
             game.p1Units = (snap.p1 || []).map(deserializeUnit);
             game.p2Units = (snap.p2 || []).map(deserializeUnit);
             game.traps = (snap.traps || []).map(t => ({...t}));
-            // Restore beacons by re-linking ownerId via unit id
+            // Restore wells by re-linking ownerId via unit id
             let allUnits = [...game.p1Units, ...game.p2Units];
             let unitById = {};
             for (let u of allUnits) unitById[u.id] = u;
-            game.beacons = (snap.beacons || []).map(b => ({
-                player: b.player, r: b.r, c: b.c,
+            game.wells = (snap.wells || snap.beacons || []).map(b => ({
+                player: b.player, r: b.r, c: b.c, turnsLeft: b.turnsLeft || 2,
                 ownerId: b.ownerIdRef != null ? unitById[b.ownerIdRef] : null
-            })).filter(b => b.ownerId); // drop stale beacons whose adept is gone
+            })).filter(b => b.ownerId); // drop stale wells whose mage is gone
             game.selectedUnit = null;
             game.planStep = null;
             // Phase-entry resets that normally happen inside nextPhase()
@@ -10897,16 +10965,16 @@
             let ourTraps = game.traps.filter(t => t.player !== oppPlayer);
             let theirTraps = (snap.traps || []).map(t => ({...t}));
             game.traps = ourTraps.concat(theirTraps);
-            // Merge beacons the same way.
-            let ourBeacons = game.beacons.filter(b => b.player !== oppPlayer);
+            // Merge wells the same way.
+            let ourWells = game.wells.filter(b => b.player !== oppPlayer);
             let allUnits = [...game.p1Units, ...game.p2Units];
             let unitById = {};
             for (let u of allUnits) unitById[u.id] = u;
-            let theirBeacons = (snap.beacons || []).map(b => ({
-                player: b.player, r: b.r, c: b.c,
+            let theirWells = (snap.wells || snap.beacons || []).map(b => ({
+                player: b.player, r: b.r, c: b.c, turnsLeft: b.turnsLeft || 2,
                 ownerId: b.ownerIdRef != null ? unitById[b.ownerIdRef] : null
             })).filter(b => b.ownerId);
-            game.beacons = ourBeacons.concat(theirBeacons);
+            game.wells = ourWells.concat(theirWells);
             game.remoteOpponentSnapshot = null;
         }
 
@@ -11021,7 +11089,7 @@
                             unit.plannedC = null;
                             unit.plannedAtk = null;
                             unit.plannedTrap = null;
-                            unit.plannedBeacon = null;
+                            unit.plannedWell = null;
                             unit.plannedAid = null;
                             unit.plannedStealth = false;
                             unit.plannedShadow = null;
@@ -11038,6 +11106,21 @@
                             game.selectedUnit.plannedR = r;
                             game.selectedUnit.plannedC = c;
                             game.planStep = 'ATTACK';
+                        }
+                    } else if (game.planStep === 'MARK' && game.selectedUnit) {
+                        // Assassin Mark Target: pick any enemy unit within Cheb 3
+                        // of planned position.
+                        let su = game.selectedUnit;
+                        let fromR = su.plannedR != null ? su.plannedR : su.r;
+                        let fromC = su.plannedC != null ? su.plannedC : su.c;
+                        let dist = Math.max(Math.abs(r - fromR), Math.abs(c - fromC));
+                        let target = game.getUnitAt(r, c);
+                        if (target && target.player !== su.player && dist >= 1 && dist <= 3) {
+                            su.plannedMark = {r, c, targetId: target.id};
+                            su.plannedAtk = null;
+                            su.ordered = true;
+                            game.selectedUnit = null;
+                            game.planStep = null;
                         }
                     } else if (game.planStep === 'RAIN' && game.selectedUnit) {
                         // Archmage Rain Fire: pick AOE center within Chebyshev 6
@@ -11098,11 +11181,15 @@
                             game.selectedUnit = null;
                             game.planStep = null;
                         }
-                    } else if (game.planStep === 'BEACON' && game.selectedUnit) {
-                        // Place Adept beacon on any in-bounds tile
+                    } else if (game.planStep === 'WELL' && game.selectedUnit) {
+                        // Place Mage Gravity Well within Mage's range from planned position
                         let su = game.selectedUnit;
-                        if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
-                            su.plannedBeacon = {r, c};
+                        let fromR = su.plannedR != null ? su.plannedR : su.r;
+                        let fromC = su.plannedC != null ? su.plannedC : su.c;
+                        let dist = Math.max(Math.abs(r - fromR), Math.abs(c - fromC));
+                        let rng = STATS[su.type].rng;
+                        if (r >= 0 && r < ROWS && c >= 0 && c < COLS && dist > 0 && dist <= rng) {
+                            su.plannedWell = {r, c};
                             su.plannedAtk = null;
                             su.ordered = true;
                             game.selectedUnit = null;
@@ -11145,11 +11232,7 @@
                             // strikes whatever enemy is planned to be on that tile.
                             let dist = Math.max(Math.abs(r - su.plannedR), Math.abs(c - su.plannedC));
                             let rng = game.getEffectiveRange(su);
-                            // Beacon Mark: Archer can target a friendly Adept's
-                            // beacon on any tile, regardless of range.
-                            let isBeaconShot = su.type === 'Archer' && game.beacons.some(b =>
-                                b.player === su.player && b.r === r && b.c === c);
-                            if (dist > 0 && (dist <= rng || isBeaconShot)) {
+                            if (dist > 0 && dist <= rng) {
                                 su.plannedAtk = {r: 0, c: 0, damageType: null, isCharge: false, targetR: r, targetC: c};
                                 su.ordered = true;
                                 game.selectedUnit = null;
