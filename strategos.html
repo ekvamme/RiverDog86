@@ -4876,8 +4876,11 @@
                         }
                     }
 
-                    // Near-death stagger
-                    if (d.isNearDeath) {
+                    // Near-death stagger — only after the lethal hit has
+                    // actually landed (displayedHp dropped to 0). Before
+                    // that point the unit reads as healthy; the wobble is
+                    // the visual reaction to the death blow.
+                    if (d.isNearDeath && ao.displayedHp <= 0) {
                         let wobble = Math.sin(performance.now() / 120) * 0.15;
                         ao.rotate = (ao.rotate || 0) + wobble;
                         ao.offsetX = Math.sin(performance.now() / 90) * 2;
@@ -5132,7 +5135,8 @@
                         ao.displayedHp = this.getDisplayedHp(d.unit, anim, null, 0);
                     }
                     let alpha = 1;
-                    if (d.isNearDeath) {
+                    // Wobble only after the death blow has landed.
+                    if (d.isNearDeath && ao.displayedHp <= 0) {
                         let wobble = Math.sin(performance.now() / 120) * 0.15;
                         ao.rotate = wobble;
                         ao.offsetX = Math.sin(performance.now() / 90) * 2;
