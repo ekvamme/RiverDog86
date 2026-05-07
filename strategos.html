@@ -1132,7 +1132,8 @@
             // `source` tags the resolution sub-step for phased playback:
             //   'movement' = trample, readied shot, trap, squeeze, edge impact
             //   'combat'   = normal attacks, cleave, volley, arcing splash
-            //   'finale'   = charge 2x, rain fire, shadow strike, volley
+            //   'finale'   = rain fire, shadow strike, volley (events that
+            //                play separately as a closing dramatic beat)
             //   'attrition'= the Weaver's culling tick
             recordDamage(unit, amount, kind, attacker, damageType, source) {
                 if (!this.pendingDamages) this.pendingDamages = [];
@@ -2212,9 +2213,11 @@
 
                         let halved = i > 0;
                         let hitTag = isCharge ? 'Charge' : 'Attack';
-                        // Determine source for phased playback
+                        // Charges land their damage when they arrive — same
+                        // beat as the slide. So 'combat' source, NOT
+                        // 'finale'. Finale is reserved for events that play
+                        // separately at end (rain fire, shadow strike, volley).
                         let atkSource = 'combat';
-                        if (isCharge) atkSource = 'finale';
                         this.hit(u, tgt, halved, damageType, mul, steadyBonus + focusChanBonus, hitTag, atkSource);
 
                         // Vanguard: Squire killing blow grants +1 mov next turn
