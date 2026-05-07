@@ -2826,6 +2826,29 @@
                     if (m) m.delayInPhase = info.delay;
                 }
 
+                // Per-unit pre-action HP (start-of-turn) from snapshot, and
+                // per-phase damage totals so the HP bar can deplete in sync
+                // with each phase's damage popups (no upfront spoiler).
+                let preActionHpByUnit = new Map();
+                for (let i = 0; i < allUnits.length; i++) {
+                    let s = snap[i];
+                    preActionHpByUnit.set(allUnits[i], s ? s.hp : allUnits[i].maxHp);
+                }
+                let damagesPerPhase = new Map(); // unit -> [d_phase0, d_phase1, ...]
+                for (let i = 0; i < phases.length; i++) {
+                    let p = phases[i];
+                    if (!p.damages) continue;
+                    for (let dmg of p.damages) {
+                        if (!dmg.unit) continue;
+                        let arr = damagesPerPhase.get(dmg.unit);
+                        if (!arr) {
+                            arr = new Array(phases.length).fill(0);
+                            damagesPerPhase.set(dmg.unit, arr);
+                        }
+                        arr[i] += dmg.amount;
+                    }
+                }
+
                 this.animation = {
                     phased: true, // flag to distinguish from legacy flat animation
                     startTime: performance.now(),
@@ -2837,6 +2860,8 @@
                     speedMultiplier: speedMul,
                     inDelay: false,
                     bumpedRedirect, // unit -> {phaseIdx, delay}
+                    preActionHpByUnit,
+                    damagesPerPhase,
                     // Full data for reference/fallback
                     allMoves: moves,
                     allAttacks: animAttacks,
@@ -3837,7 +3862,12 @@
                 }
 
                 // HP bar under the plinth. Color tiers: ≥66% green, 33–66% yellow, <33% red.
-                let hpFrac = Math.max(0, u.hp) / u.maxHp;
+                // animOpts.displayedHp lets the phased-animation renderer show
+                // a stage-appropriate HP that depletes in sync with damage
+                // popups, instead of spoiling the final value upfront.
+                let displayedHpVal = (animOpts && typeof animOpts.displayedHp === 'number')
+                    ? animOpts.displayedHp : u.hp;
+                let hpFrac = Math.max(0, displayedHpVal) / u.maxHp;
                 let hpColor = hpFrac < 0.33 ? '#e03030' : hpFrac < 0.66 ? '#e8c030' : '#34c04a';
                 let barW = 36;
                 let barH = 7;
@@ -4824,6 +4854,8 @@
                     if (unitAlpha <= 0.01) continue;
 
                     let ao = {};
+                    // Stage HP bar to deplete in lockstep with damage popups.
+                    ao.displayedHp = this.getDisplayedHp(d.unit, anim, phaseT, attackStart);
 
                     // Movement lean (for units moving in this phase)
                     if (d.unitPhaseIdx === anim.currentPhaseIndex &&
@@ -5030,6 +5062,31 @@
                 }
             }
 
+            // Compute the HP value to render for a unit at this point in the
+            // animation. Damage from completed phases is fully applied; the
+            // current phase's damage applies once we cross the attack window.
+            // phaseT and attackStart are 0..1 within the current phase. If
+            // phaseT is null, we're at rest (delay/paused) — apply all damage
+            // up to and including the most recently completed phase.
+            getDisplayedHp(unit, anim, phaseT, attackStart) {
+                let preHp = anim.preActionHpByUnit && anim.preActionHpByUnit.has(unit)
+                    ? anim.preActionHpByUnit.get(unit) : unit.maxHp;
+                let arr = anim.damagesPerPhase && anim.damagesPerPhase.get(unit);
+                if (!arr) return preHp;
+                let cur = anim.currentPhaseIndex;
+                let total = 0;
+                for (let i = 0; i < cur; i++) total += arr[i] || 0;
+                let inDelay = !!anim.inDelay;
+                if (phaseT === null || phaseT === undefined || inDelay) {
+                    // At rest — show post-damage HP for the just-completed
+                    // phase too (during inter-phase delay or paused state).
+                    if (inDelay) total += arr[cur] || 0;
+                } else if (phaseT >= attackStart) {
+                    total += arr[cur] || 0;
+                }
+                return Math.max(0, preHp - total);
+            }
+
             // Helper: determine which phase index a unit belongs to
             getUnitPhaseIndex(unit, anim) {
                 // Bumped units animate alongside their bumper, not in their
@@ -5064,6 +5121,16 @@
                 drawList.sort((a, b) => (a.ar + a.ac) - (b.ar + b.ac));
                 for (let d of drawList) {
                     let ao = {};
+                    // At-rest renderer is also used during inter-phase delays
+                    // and the post-animation paused state. Use null phaseT so
+                    // getDisplayedHp applies all damage up to and including
+                    // the most recently completed phase (see helper).
+                    if (anim.paused) {
+                        // Paused at end — show post-everything HP
+                        ao.displayedHp = d.unit.hp;
+                    } else {
+                        ao.displayedHp = this.getDisplayedHp(d.unit, anim, null, 0);
+                    }
                     let alpha = 1;
                     if (d.isNearDeath) {
                         let wobble = Math.sin(performance.now() / 120) * 0.15;
