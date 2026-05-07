@@ -4843,6 +4843,19 @@
                     this.ctx.restore();
                 }
 
+                // Build the set of units who dealt damage in this phase so
+                // we can briefly halo them while their damage popups float.
+                // Visual signal: gold glow under the attacker = "I struck."
+                let activeAttackers = new Set();
+                if (phase.damages) {
+                    for (let pd of phase.damages) {
+                        if (!pd.hits) continue;
+                        for (let h of pd.hits) {
+                            if (h.attackerUnit) activeAttackers.add(h.attackerUnit);
+                        }
+                    }
+                }
+
                 // --- Draw units ---
                 for (let d of drawList) {
                     let unitAlpha = d.alpha;
@@ -4917,6 +4930,29 @@
                         this.ctx.ellipse(gx, gy, 24, 12, 0, 0, Math.PI * 2);
                         this.ctx.fill();
                         this.ctx.restore();
+                    }
+
+                    // Attacker glow: halo any unit who dealt damage this
+                    // phase, timed to the attack window so it pulses
+                    // alongside the damage popups it caused.
+                    if (inAttackWindow && activeAttackers.has(d.unit)) {
+                        let glow = Math.sin(attackLocalT * Math.PI);
+                        if (glow > 0.05) {
+                            let [gx, gy] = this.isoCenter(d.ar, d.ac);
+                            this.ctx.save();
+                            // Soft gold underglow
+                            this.ctx.fillStyle = `rgba(255, 210, 90, ${0.40 * glow})`;
+                            this.ctx.beginPath();
+                            this.ctx.ellipse(gx, gy, 30, 14, 0, 0, Math.PI * 2);
+                            this.ctx.fill();
+                            // Brighter outer ring for emphasis
+                            this.ctx.strokeStyle = `rgba(255, 240, 140, ${0.7 * glow})`;
+                            this.ctx.lineWidth = 2;
+                            this.ctx.beginPath();
+                            this.ctx.ellipse(gx, gy - PIECE_H * 0.45, 22, 30, 0, 0, Math.PI * 2);
+                            this.ctx.stroke();
+                            this.ctx.restore();
+                        }
                     }
 
                     this.ctx.globalAlpha = unitAlpha;
