@@ -2609,13 +2609,12 @@
                     else if (phase3Units.includes(bumper)) bumperPhaseIdx = 2;
                     else if (phase4Units.includes(bumper)) bumperPhaseIdx = 3;
                     if (bumperPhaseIdx < 0) continue;
-                    // Only redirect if it's a forward shift (bumper plays
-                    // later than the bumped unit's classified phase).
-                    let bumpedClassifiedIdx = phase1Units.includes(u) ? 0
-                        : phase2Units.includes(u) ? 1
-                        : phase3Units.includes(u) ? 2
-                        : phase4Units.includes(u) ? 3 : -1;
-                    if (bumpedClassifiedIdx >= bumperPhaseIdx) continue;
+                    // Always redirect — a bump is a single event involving
+                    // both units, so they should move in the same beat.
+                    // Forward redirect (bumper later): bumped unit slides
+                    // aside in bumper's phase. Backward redirect (bumper
+                    // earlier): bumped unit's reaction is also pulled into
+                    // the bumper's phase so the knockback follows contact.
                     bumpedRedirect.set(u, {phaseIdx: bumperPhaseIdx, delay: 0.45});
                 }
 
