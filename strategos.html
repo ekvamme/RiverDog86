@@ -2873,6 +2873,20 @@
                 }
             }
 
+            // Reset the action-resolve animation back to the start so the
+            // player can rewatch the same turn's resolution. Game state is
+            // unchanged — only the animation timing pointers reset.
+            rewatchAnimation() {
+                let a = this.animation;
+                if (!a) return;
+                let now = performance.now();
+                a.startTime = now;
+                a.phaseStartTime = now;
+                a.currentPhaseIndex = 0;
+                a.inDelay = false;
+                a.paused = false;
+            }
+
             getGameOver() {
                 // 0 = ongoing, 1 = P1 wins, 2 = P2 wins, 3 = draw.
                 // Both sides empty = simultaneous wipe (e.g. last-unit mutual
@@ -4998,11 +5012,20 @@
                             this.ctx.restore();
                         }
                     }
+                    // Rewatch button — replay the animation from the start.
+                    let rwW = 160, rwH = 34;
+                    let rwX = CANVAS_W / 2 - rwW - 10;
+                    let rwY = CANVAS_H - rwH - 28;
+                    this.drawButton(game, 'rewatch_anim', rwX, rwY, rwW, rwH, '🔁 Rewatch', {color: '#3a5a8a', font: 'bold 13px Arial'});
+                    // Continue button — explicit affordance alongside click-anywhere.
+                    let coX = CANVAS_W / 2 + 10;
+                    this.drawButton(game, 'continue_anim', coX, rwY, rwW, rwH, 'Continue ▶', {color: '#3a8a5a', font: 'bold 13px Arial'});
+
                     this.ctx.save();
                     this.ctx.fillStyle = 'rgba(200,200,200,0.8)';
                     this.ctx.font = '13px Arial';
                     this.ctx.textAlign = 'center';
-                    this.ctx.fillText('Click or press any key to continue', CANVAS_W / 2, CANVAS_H - 12);
+                    this.ctx.fillText('Press R to rewatch · click anywhere else or any key to continue', CANVAS_W / 2, CANVAS_H - 8);
                     this.ctx.restore();
                 }
             }
@@ -11082,8 +11105,21 @@
         canvas.addEventListener('click', (e) => {
             let [px, py] = canvasCoords(e);
 
-            // Dismiss damage pause on click
+            // Animation paused: check Rewatch / Continue buttons first; if no
+            // button hit, fall through to dismiss-on-click behavior.
             if (game.phase === 'ACTION_RESOLVE' && game.animation && game.animation.paused) {
+                let rb = game.clickBounds && game.clickBounds['rewatch_anim'];
+                if (rb && px >= rb[0] && px < rb[0]+rb[2] && py >= rb[1] && py < rb[1]+rb[3]) {
+                    game.rewatchAnimation();
+                    return;
+                }
+                let cb = game.clickBounds && game.clickBounds['continue_anim'];
+                if (cb && px >= cb[0] && px < cb[0]+cb[2] && py >= cb[1] && py < cb[1]+cb[3]) {
+                    game.animation = null;
+                    game.nextPhase();
+                    return;
+                }
+                // Click elsewhere → dismiss as before
                 game.animation = null;
                 game.nextPhase();
                 return;
@@ -11358,8 +11394,12 @@
         })();
 
         document.addEventListener('keydown', (e) => {
-            // Dismiss damage pause on any key
+            // Animation paused: R or r → rewatch; any other key → continue.
             if (game.phase === 'ACTION_RESOLVE' && game.animation && game.animation.paused) {
+                if (e.key === 'r' || e.key === 'R') {
+                    game.rewatchAnimation();
+                    return;
+                }
                 game.animation = null;
                 game.nextPhase();
                 return;
