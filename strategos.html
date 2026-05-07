@@ -2618,6 +2618,46 @@
                     bumpedRedirect.set(u, {phaseIdx: bumperPhaseIdx, bumpFinishAt: 0.5});
                 }
 
+                // --- CASCADE REDIRECT ---
+                // When unit A moves into a tile that another unit B started on
+                // (B vacated cleanly without being bumped), the visual order
+                // matters: B must vacate before A's classified phase plays,
+                // otherwise B is shown sitting at the tile while A's earlier
+                // animation slides through it. Detect these cases and redirect
+                // B's MOVE to A's phase so they animate together in lockstep.
+                let getClassifiedIdx = (unit) => {
+                    if (phase1Units.includes(unit)) return 0;
+                    if (phase2Units.includes(unit)) return 1;
+                    if (phase3Units.includes(unit)) return 2;
+                    if (phase4Units.includes(unit)) return 3;
+                    return -1;
+                };
+                for (let A of allUnits) {
+                    if (A.hp <= 0) continue;
+                    let aOrig = origPos.get(A);
+                    if (!aOrig) continue;
+                    if (aOrig.r === A.r && aOrig.c === A.c) continue; // A didn't move
+                    for (let B of allUnits) {
+                        if (B === A) continue;
+                        if (B.hp <= 0) continue;
+                        if (bumpedRedirect.has(B)) continue; // already handled by bump path
+                        let bOrig = origPos.get(B);
+                        if (!bOrig) continue;
+                        // B started on A's destination tile and moved elsewhere
+                        if (bOrig.r !== A.r || bOrig.c !== A.c) continue;
+                        if (B.r === bOrig.r && B.c === bOrig.c) continue; // B didn't actually vacate
+                        let aIdx = getClassifiedIdx(A);
+                        let bIdx = getClassifiedIdx(B);
+                        if (aIdx < 0 || bIdx < 0) continue;
+                        // Only redirect when B is in a LATER phase than A.
+                        // Same-or-earlier already plays in the right order.
+                        if (bIdx <= aIdx) continue;
+                        // Animate B's vacate at full duration (no compression)
+                        // alongside A's arrival in A's phase.
+                        bumpedRedirect.set(B, {phaseIdx: aIdx, bumpFinishAt: 1.0});
+                    }
+                }
+
                 // --- Build damage entries per phase ---
                 // Each damage event gets routed to the phase it should display in.
                 let moveMoveForUnit = (u) => moves.find(m => m.unit === u);
@@ -5942,6 +5982,16 @@
                 } else if (game.phase === 'READY_ACTION') {
                     this.drawReady(game);
                 } else if (game.phase === 'ACTION_RESOLVE') {
+                    // Persistent Replay button — always visible during the
+                    // resolve phase so the player can rewind at any moment,
+                    // even mid-animation. The paused-state buttons (handled
+                    // inside drawPhasedAnim) sit above this one.
+                    if (game.animation) {
+                        let rbW = 180, rbH = 36;
+                        let rbX = CANVAS_W / 2 - rbW / 2;
+                        let rbY = CANVAS_H - rbH - 6;
+                        this.drawButton(game, 'replay_anim', rbX, rbY, rbW, rbH, '🔁 Replay Animation', {color: '#3a5a8a', font: 'bold 13px Arial'});
+                    }
                     if (game.animation && game.animation.paused) {
                         // PAUSED: show turn recap in the UI panel
                         this.ctx.fillStyle = '#ffd84a';
@@ -10036,6 +10086,13 @@
 
         // Dispatch table for button clicks registered in game.clickBounds.
         function handleButtonClick(game, key) {
+            // ---- ACTION RESOLVE ----
+            if (key === 'replay_anim') {
+                if (game.phase === 'ACTION_RESOLVE' && game.animation) {
+                    game.rewatchAnimation();
+                }
+                return true;
+            }
             // ---- MENU ----
             if (key === 'mode_pvp') {
                 game.gameMode = 'PvP';
@@ -11224,16 +11281,18 @@
         canvas.addEventListener('click', (e) => {
             let [px, py] = canvasCoords(e);
 
-            // Animation paused: check Rewatch / Continue buttons first; if no
-            // button hit, fall through to dismiss-on-click behavior.
+            // Animation paused: check Rewatch / Continue / Replay buttons
+            // first; if no button hit, fall through to dismiss-on-click.
             if (game.phase === 'ACTION_RESOLVE' && game.animation && game.animation.paused) {
-                let rb = game.clickBounds && game.clickBounds['rewatch_anim'];
-                if (rb && px >= rb[0] && px < rb[0]+rb[2] && py >= rb[1] && py < rb[1]+rb[3]) {
+                let hitInside = (key) => {
+                    let b = game.clickBounds && game.clickBounds[key];
+                    return b && px >= b[0] && px < b[0]+b[2] && py >= b[1] && py < b[1]+b[3];
+                };
+                if (hitInside('rewatch_anim') || hitInside('replay_anim')) {
                     game.rewatchAnimation();
                     return;
                 }
-                let cb = game.clickBounds && game.clickBounds['continue_anim'];
-                if (cb && px >= cb[0] && px < cb[0]+cb[2] && py >= cb[1] && py < cb[1]+cb[3]) {
+                if (hitInside('continue_anim')) {
                     game.animation = null;
                     game.nextPhase();
                     return;
