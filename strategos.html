@@ -2610,12 +2610,12 @@
                     else if (phase4Units.includes(bumper)) bumperPhaseIdx = 3;
                     if (bumperPhaseIdx < 0) continue;
                     // Always redirect — a bump is a single event involving
-                    // both units, so they should move in the same beat.
-                    // Forward redirect (bumper later): bumped unit slides
-                    // aside in bumper's phase. Backward redirect (bumper
-                    // earlier): bumped unit's reaction is also pulled into
-                    // the bumper's phase so the knockback follows contact.
-                    bumpedRedirect.set(u, {phaseIdx: bumperPhaseIdx, delay: 0.45});
+                    // both units, so they animate in the same phase. The
+                    // bumped unit's slide is COMPRESSED to the first half
+                    // of the move window so the tile is clear before the
+                    // bumper arrives (no overlap). bumpFinishAt expresses
+                    // the moveT value at which the bumped unit's move ends.
+                    bumpedRedirect.set(u, {phaseIdx: bumperPhaseIdx, bumpFinishAt: 0.5});
                 }
 
                 // --- Build damage entries per phase ---
@@ -2820,10 +2820,13 @@
                     }
                 }
 
-                // Apply bump-redirect delay to each redirected unit's move.
+                // Apply bump-redirect compression to each redirected unit's
+                // move. The bumped unit completes its slide in the first
+                // half of the move window so it's out of the way before the
+                // bumper arrives — no visual overlap.
                 for (let [u, info] of bumpedRedirect) {
                     let m = moves.find(mv => mv.unit === u);
-                    if (m) m.delayInPhase = info.delay;
+                    if (m) m.bumpFinishAt = info.bumpFinishAt;
                 }
 
                 // Per-unit pre-action HP (start-of-turn) from snapshot, and
@@ -4774,13 +4777,14 @@
                             else if (moveT < 0.6) { ar = m.endR; ac = m.endC; alpha = 0; }
                             else { ar = m.endR; ac = m.endC; alpha = (moveT - 0.6) / 0.4; }
                         } else {
-                            // Per-move delay support: bumped units start moving
-                            // partway through the phase so the bumper visually
-                            // makes contact first.
-                            let myMoveT = moveT;
-                            if (m.delayInPhase && m.delayInPhase > 0) {
-                                myMoveT = Math.max(0, (moveT - m.delayInPhase) / (1 - m.delayInPhase));
-                            }
+                            // Per-move compression support: bumped units
+                            // complete their slide in the first half of the
+                            // move window (bumpFinishAt < 1) so the tile is
+                            // clear before the bumper arrives. Default 1
+                            // means full move duration as normal.
+                            let finishAt = (m.bumpFinishAt && m.bumpFinishAt > 0 && m.bumpFinishAt < 1)
+                                ? m.bumpFinishAt : 1;
+                            let myMoveT = Math.min(1, moveT / finishAt);
                             let myEased = myMoveT < 0.5
                                 ? 4 * myMoveT * myMoveT * myMoveT
                                 : 1 - Math.pow(-2 * myMoveT + 2, 3) / 2;
