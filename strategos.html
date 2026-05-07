@@ -4789,10 +4789,20 @@
                         }
                     }
 
-                    // Near-death visual: unit at 0 HP but not yet shown dying
+                    // Death sequencing: drive both the topple and post-death
+                    // hide off the actual death blow landing, not the unit's
+                    // classified phase. deathPhaseIdx is the phase where
+                    // displayedHp first reaches 0.
+                    let deathPhaseIdx = !m.alive ? this.getDeathPhaseIndex(m.unit, anim) : -1;
+                    // Skip drawing in any phase AFTER the unit died.
+                    let skipPostDeath = !m.alive && deathPhaseIdx >= 0 && anim.currentPhaseIndex > deathPhaseIdx;
+                    if (skipPostDeath) continue;
+                    // Topple in the unit's death phase only — once damage has landed.
+                    let showDeath = !m.alive && deathPhaseIdx === anim.currentPhaseIndex
+                        && phaseT >= attackStart;
+                    // Legacy near-death flag retained for any external checks
+                    // but no longer drives wobble (the topple covers it now).
                     let isNearDeath = !m.alive && anim.nearDeathUnits && anim.nearDeathUnits.has(m.unit);
-                    // Check if this unit should show death in this phase
-                    let showDeath = !m.alive && !isNearDeath && unitPhaseIdx <= anim.currentPhaseIndex;
 
                     // Danger glow for Phase 2 lambs
                     let isDangerGlow = false;
@@ -4860,8 +4870,10 @@
                 for (let d of drawList) {
                     let unitAlpha = d.alpha;
                     if (d.showDeath) {
-                        // Death fade — determine how far into death we are
-                        let deathT = Math.max(0, (phaseT - 0.7) / 0.3);
+                        // Death fade — synced with topple (attack window onward)
+                        let toppleStart = attackStart;
+                        let toppleSpan = Math.max(0.001, 1 - toppleStart);
+                        let deathT = Math.max(0, Math.min(1, (phaseT - toppleStart) / toppleSpan));
                         unitAlpha *= (1 - deathT);
                     }
                     if (unitAlpha <= 0.01) continue;
@@ -4889,16 +4901,8 @@
                         }
                     }
 
-                    // Near-death stagger — only after the lethal hit has
-                    // actually landed (displayedHp dropped to 0). Before
-                    // that point the unit reads as healthy; the wobble is
-                    // the visual reaction to the death blow.
-                    if (d.isNearDeath && ao.displayedHp <= 0) {
-                        let wobble = Math.sin(performance.now() / 120) * 0.15;
-                        ao.rotate = (ao.rotate || 0) + wobble;
-                        ao.offsetX = Math.sin(performance.now() / 90) * 2;
-                        unitAlpha *= 0.7 + 0.3 * Math.sin(performance.now() / 200);
-                    }
+                    // (Near-death wobble removed — once the death blow lands
+                    // we drop straight into the topple animation below.)
 
                     // Hit recoil (for units taking damage in this phase)
                     if (inAttackWindow && phase.damages) {
@@ -4911,9 +4915,12 @@
                         }
                     }
 
-                    // Death topple
+                    // Death topple — starts the moment the death blow lands
+                    // (attack window) and finishes by the end of the phase.
                     if (d.showDeath) {
-                        let deathT = Math.max(0, (phaseT - 0.7) / 0.3);
+                        let toppleStart = attackStart;
+                        let toppleSpan = Math.max(0.001, 1 - toppleStart);
+                        let deathT = Math.max(0, Math.min(1, (phaseT - toppleStart) / toppleSpan));
                         let toppleDir = d.unit.player === 1 ? 1 : -1;
                         ao.rotate = (ao.rotate || 0) + toppleDir * deathT * 0.8;
                         ao.scaleX = 1 - deathT * 0.3;
@@ -5126,6 +5133,21 @@
                 return Math.max(0, preHp - total);
             }
 
+            // Returns the phase index where the unit's displayedHp first
+            // reaches 0 (the "death blow" phase), or -1 if they survive.
+            getDeathPhaseIndex(unit, anim) {
+                let preHp = anim.preActionHpByUnit && anim.preActionHpByUnit.has(unit)
+                    ? anim.preActionHpByUnit.get(unit) : unit.maxHp;
+                let arr = anim.damagesPerPhase && anim.damagesPerPhase.get(unit);
+                if (!arr) return -1;
+                let cumulative = 0;
+                for (let i = 0; i < arr.length; i++) {
+                    cumulative += arr[i] || 0;
+                    if (cumulative >= preHp) return i;
+                }
+                return -1;
+            }
+
             // Helper: determine which phase index a unit belongs to
             getUnitPhaseIndex(unit, anim) {
                 // Bumped units animate alongside their bumper, not in their
@@ -5152,33 +5174,19 @@
                         ar = m.startR;
                         ac = m.startC;
                     }
-                    let isNearDeath = !m.alive && anim.nearDeathUnits && anim.nearDeathUnits.has(m.unit);
-                    let showDeath = !m.alive && !isNearDeath && unitPhaseIdx <= anim.currentPhaseIndex;
-                    if (showDeath) continue; // Don't draw dead units
-                    drawList.push({ unit: m.unit, ar, ac, isNearDeath });
+                    // Death sequencing: hide dead units once the death blow
+                    // has landed (their displayedHp reached 0). For inter-
+                    // phase delays this means the unit who died in the just-
+                    // completed phase is gone for subsequent rest renders.
+                    let deathPhaseIdx = !m.alive ? this.getDeathPhaseIndex(m.unit, anim) : -1;
+                    let dh = anim.paused ? m.unit.hp : this.getDisplayedHp(m.unit, anim, null, 0);
+                    if (!m.alive && dh <= 0) continue; // dead and the blow has landed → off-screen
+                    drawList.push({ unit: m.unit, ar, ac, displayedHp: dh });
                 }
                 drawList.sort((a, b) => (a.ar + a.ac) - (b.ar + b.ac));
                 for (let d of drawList) {
                     let ao = {};
-                    // At-rest renderer is also used during inter-phase delays
-                    // and the post-animation paused state. Use null phaseT so
-                    // getDisplayedHp applies all damage up to and including
-                    // the most recently completed phase (see helper).
-                    if (anim.paused) {
-                        // Paused at end — show post-everything HP
-                        ao.displayedHp = d.unit.hp;
-                    } else {
-                        ao.displayedHp = this.getDisplayedHp(d.unit, anim, null, 0);
-                    }
-                    let alpha = 1;
-                    // Wobble only after the death blow has landed.
-                    if (d.isNearDeath && ao.displayedHp <= 0) {
-                        let wobble = Math.sin(performance.now() / 120) * 0.15;
-                        ao.rotate = wobble;
-                        ao.offsetX = Math.sin(performance.now() / 90) * 2;
-                        alpha = 0.7 + 0.3 * Math.sin(performance.now() / 200);
-                    }
-                    this.ctx.globalAlpha = alpha;
+                    ao.displayedHp = d.displayedHp;
                     this.drawUnit(d.unit, false, [d.ar, d.ac], ao);
                     this.ctx.globalAlpha = 1;
                 }
