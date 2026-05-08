@@ -878,7 +878,7 @@
                         u._activeSynergies = [...(u._activeSynergies || []), 'Death Save'];
                         if (this.combatLog) {
                             let pName = u.player === 1 ? 'P1' : 'P2';
-                            this.combatLog.push(`${pName} Assassin [Death Save]: would-be-lethal damage cancelled — HP restored to ${restoreTo} (once per match)`);
+                            this.logEvt('status', `${pName} Assassin [Death Save]: would-be-lethal damage cancelled — HP restored to ${restoreTo} (once per match)`);
                         }
                     }
                 }
@@ -954,7 +954,8 @@
                     let modStr = modParts.length ? ' → ' + modParts.join(' ') : '';
                     let tag = logTag ? ` [${logTag}]` : '';
                     let ampStr = amps.length ? ` | Amp: ${amps.join(', ')}` : '';
-                    this.combatLog.push(`${pName} ${att.type} → ${tName} ${tgt.type}${tag}: ${dmg} dmg (${baseStr}${modStr})${ampStr}`);
+                    let logCat = dmgSource === 'attrition' ? 'weaver' : (dmgSource || 'combat');
+                    this.logEvt(logCat, `${pName} ${att.type} → ${tName} ${tgt.type}${tag}: ${dmg} dmg (${baseStr}${modStr})${ampStr}`);
                 }
             }
 
@@ -1135,6 +1136,13 @@
             //   'finale'   = rain fire, shadow strike, volley (events that
             //                play separately as a closing dramatic beat)
             //   'attrition'= the Weaver's culling tick
+            // Push a combat-log entry with a category for the recap to
+            // group by. Categories: 'movement' | 'combat' | 'finale' |
+            // 'weaver' | 'status' | 'other'.
+            logEvt(category, text) {
+                if (this.combatLog) this.combatLog.push({category, text});
+            }
+
             recordDamage(unit, amount, kind, attacker, damageType, source) {
                 if (!this.pendingDamages) this.pendingDamages = [];
                 if (amount <= 0 || !unit) return;
@@ -1338,7 +1346,7 @@
                             u._gravWellSlowed = true;
                             if (this.combatLog) {
                                 let pName = u.player === 1 ? 'P1' : 'P2';
-                                this.combatLog.push(`${pName} ${u.type} slowed by Gravity Well at (${w.r},${w.c}) — movement capped to 1`);
+                                this.logEvt('movement', `${pName} ${u.type} slowed by Gravity Well at (${w.r},${w.c}) — movement capped to 1`);
                             }
                             break;
                         }
@@ -1391,7 +1399,7 @@
                             if (this.combatLog) {
                                 let pName = u.player === 1 ? 'P1' : 'P2';
                                 let axisLabel = ley.axis === 'row' ? `row ${ley.index}` : `col ${ley.index}`;
-                                this.combatLog.push(`${pName} ${u.type} crosses Ley Line (${axisLabel}, ${crossings} wall${crossings>1?'s':''}): ${total} Weaver dmg (${perWall}×${crossings}, ignores defense)`);
+                                this.logEvt('movement', `${pName} ${u.type} crosses Ley Line (${axisLabel}, ${crossings} wall${crossings>1?'s':''}): ${total} Weaver dmg (${perWall}×${crossings}, ignores defense)`);
                             }
                             for (let cu of ley.casters) {
                                 if (!cu._activeSynergies.includes('LeyLine Hit')) cu._activeSynergies.push('LeyLine Hit');
@@ -1694,7 +1702,7 @@
                                     if (this.combatLog) {
                                         let tName = u.player === 1 ? 'P1' : 'P2';
                                         let wName = winner.player === 1 ? 'P1' : 'P2';
-                                        this.combatLog.push(`${tName} ${u.type} holds edge — ${wName} ${winner.type} bounces back`);
+                                        this.logEvt('movement', `${tName} ${u.type} holds edge — ${wName} ${winner.type} bounces back`);
                                     }
                                     break; // contest resolved — winner bounced
                                 }
@@ -1715,7 +1723,7 @@
                                     if (this.combatLog) {
                                         let tName = u.player === 1 ? 'P1' : 'P2';
                                         let wName = winner.player === 1 ? 'P1' : 'P2';
-                                        this.combatLog.push(`${tName} ${u.type} holds — ${wName} ${winner.type} bounces back`);
+                                        this.logEvt('movement', `${tName} ${u.type} holds — ${wName} ${winner.type} bounces back`);
                                     }
                                     break;
                                 }
@@ -1749,7 +1757,7 @@
                             this.recordDamage(u, prevHpSq, 'dmg', null, null, 'movement');
                             if (this.combatLog) {
                                 let tName = u.player === 1 ? 'P1' : 'P2';
-                                this.combatLog.push(`${tName} ${u.type} [Squeeze]: crushed (bounced into friendly)`);
+                                this.logEvt('movement', `${tName} ${u.type} [Squeeze]: crushed (bounced into friendly)`);
                             }
                             break;
                         }
@@ -1780,7 +1788,7 @@
                             this.recordDamage(u, prevHpOv, 'dmg', null, null, 'movement');
                             if (this.combatLog) {
                                 let tName = u.player === 1 ? 'P1' : 'P2';
-                                this.combatLog.push(`${tName} ${u.type} [Squeeze]: crushed (overlap after resolution)`);
+                                this.logEvt('movement', `${tName} ${u.type} [Squeeze]: crushed (overlap after resolution)`);
                             }
                         }
                     } else {
@@ -1898,7 +1906,7 @@
                         u.plannedAtk = null;
                         if (this.combatLog) {
                             let pName = u.player === 1 ? 'P1' : 'P2';
-                            this.combatLog.push(`${pName} ${u.type} charge halted by trap at (${midR},${midC})`);
+                            this.logEvt('movement', `${pName} ${u.type} charge halted by trap at (${midR},${midC})`);
                         }
                     }
                 }
@@ -1946,7 +1954,7 @@
                             let pName = trap.player === 1 ? 'P1' : 'P2';
                             let tName = e.player === 1 ? 'P1' : 'P2';
                             let chargeNote = wasCharging ? ', charge — no defense' : '';
-                            this.combatLog.push(`${pName} ${trapOwnerType} Trap → ${tName} ${e.type} [Trap]: ${dmg} dmg (${baseDmg} explosive${wasCharging ? '' : ' - ' + STATS[e.type].dfn.Ex + ' dfn(Ex)'}${chargeNote})`);
+                            this.logEvt('movement', `${pName} ${trapOwnerType} Trap → ${tName} ${e.type} [Trap]: ${dmg} dmg (${baseDmg} explosive${wasCharging ? '' : ' - ' + STATS[e.type].dfn.Ex + ' dfn(Ex)'}${chargeNote})`);
                         }
                     }
                     // Anyone else within the splash radius takes half damage
@@ -1964,7 +1972,7 @@
                             let trapOwnerType = trap.ownerId ? trap.ownerId.type : 'Rogue';
                             let pName = trap.player === 1 ? 'P1' : 'P2';
                             let tName = e.player === 1 ? 'P1' : 'P2';
-                            this.combatLog.push(`${pName} ${trapOwnerType} Trap → ${tName} ${e.type} [Trap splash]: ${dmg} dmg (${baseDmg} explosive - ${STATS[e.type].dfn.Ex} dfn(Ex), halved)`);
+                            this.logEvt('movement', `${pName} ${trapOwnerType} Trap → ${tName} ${e.type} [Trap splash]: ${dmg} dmg (${baseDmg} explosive - ${STATS[e.type].dfn.Ex} dfn(Ex), halved)`);
                         }
                     }
                 }
@@ -2010,7 +2018,7 @@
                                 if (this.combatLog) {
                                     let pName = u.player === 1 ? 'P1' : 'P2';
                                     let tName = tgt.player === 1 ? 'P1' : 'P2';
-                                    this.combatLog.push(`${pName} Assassin → ${tName} ${tgt.type} [Shadow Strike]: INSTANT KILL (backstab)`);
+                                    this.logEvt('finale', `${pName} Assassin → ${tName} ${tgt.type} [Shadow Strike]: INSTANT KILL (backstab)`);
                                 }
                             }
                         }
@@ -2068,7 +2076,7 @@
                             if (this.combatLog) {
                                 let pName = u.player === 1 ? 'P1' : 'P2';
                                 let tName = centerVictim.player === 1 ? 'P1' : 'P2';
-                                this.combatLog.push(`${pName} Archmage → ${tName} ${centerVictim.type} [Rain Fire]: ${dmg} dmg (14 magic - ${STATS[centerVictim.type].dfn.Ma} dfn(Ma))`);
+                                this.logEvt('finale', `${pName} Archmage → ${tName} ${centerVictim.type} [Rain Fire]: ${dmg} dmg (14 magic - ${STATS[centerVictim.type].dfn.Ma} dfn(Ma))`);
                             }
                         }
                         // Pick 4 random splash offsets (Fisher-Yates partial shuffle)
@@ -2093,7 +2101,7 @@
                             if (this.combatLog) {
                                 let pName = u.player === 1 ? 'P1' : 'P2';
                                 let tName = v.player === 1 ? 'P1' : 'P2';
-                                this.combatLog.push(`${pName} Archmage → ${tName} ${v.type} [Rain Fire splash]: ${dmg} dmg (7 magic - ${STATS[v.type].dfn.Ma} dfn(Ma), halved)`);
+                                this.logEvt('finale', `${pName} Archmage → ${tName} ${v.type} [Rain Fire splash]: ${dmg} dmg (7 magic - ${STATS[v.type].dfn.Ma} dfn(Ma), halved)`);
                             }
                         }
                         // Animation: explosion at center + the 4 splash tiles.
@@ -2336,7 +2344,7 @@
                     if (this.combatLog) {
                         let pName = u.player === 1 ? 'P1' : 'P2';
                         let tName = target.player === 1 ? 'P1' : 'P2';
-                        this.combatLog.push(`${pName} Assassin marks ${tName} ${target.type} — Piercing attacks halve P def for next 2 turns`);
+                        this.logEvt('status', `${pName} Assassin marks ${tName} ${target.type} — Piercing attacks halve P def for next 2 turns`);
                     }
                     u.plannedMark = null;
                 }
@@ -2365,7 +2373,7 @@
                                 let pName = zone.player === 1 ? 'P1' : 'P2';
                                 let tName = u.player === 1 ? 'P1' : 'P2';
                                 let axisLabel = zone.axis === 'row' ? `row ${zone.index}` : `col ${zone.index}`;
-                                this.combatLog.push(`${pName} Rain of Arrows (${zone.n} archers, ${axisLabel}) → ${tName} ${u.type}: ${dmg} dmg (${raw} raw P - ${dfn} dfn(P))`);
+                                this.logEvt('finale', `${pName} Rain of Arrows (${zone.n} archers, ${axisLabel}) → ${tName} ${u.type}: ${dmg} dmg (${raw} raw P - ${dfn} dfn(P))`);
                             }
                         }
                     }
@@ -2410,7 +2418,7 @@
                         this.recordDamage(u, attrition, 'cull', null, null, 'attrition');
                         if (this.combatLog) {
                             let tName = u.player === 1 ? 'P1' : 'P2';
-                            this.combatLog.push(`${tName} ${u.type} [Attrition]: ${attrition} dmg (25% of ${u.hp + attrition} remaining HP)`);
+                            this.logEvt('weaver', `${tName} ${u.type} [Attrition]: ${attrition} dmg (25% of ${u.hp + attrition} remaining HP)`);
                         }
                     }
                     this.cullDeadUnits();
@@ -2987,17 +2995,36 @@
                 let logDiv = document.getElementById('combatLog');
                 if (logDiv && this.combatLog && this.combatLog.length > 0) {
                     logDiv.style.display = 'block';
-                    logDiv.innerHTML = '<div style="color:#f0c040;font-weight:bold;margin-bottom:6px;font-family:Arial,sans-serif;font-size:14px;">⚔ Combat Log — Turn ' + this.turn + '</div>' +
-                        this.combatLog.map(line => {
-                            let color = '#ccc';
-                            if (line.includes('[Squeeze]') || line.includes('INSTANT KILL')) color = '#ff6666';
-                            else if (line.includes('[Attrition]')) color = '#c084fc';
-                            else if (line.includes('Amp:')) color = '#60d0ff';
-                            else if (line.includes('[Trap')) color = '#ffa040';
-                            else if (line.includes('[Rain Fire')) color = '#ff8040';
-                            else if (line.includes('[Cleave]')) color = '#e0e080';
-                            return '<div style="color:' + color + ';padding:1px 0;">' + line.replace(/→/g, '→') + '</div>';
-                        }).join('');
+                    const SECTIONS = [
+                        { id: 'movement', label: '⚡ Movement & Hazards', color: '#ffa040' },
+                        { id: 'combat',   label: '⚔ Combat',             color: '#e0e080' },
+                        { id: 'finale',   label: '✨ Finale',             color: '#ff8060' },
+                        { id: 'status',   label: '🛡 Status',             color: '#80c0ff' },
+                        { id: 'weaver',   label: '⚖ The Weaver',         color: '#c084fc' }
+                    ];
+                    let groups = {};
+                    for (let e of this.combatLog) {
+                        let cat = (e && e.category) || 'other';
+                        (groups[cat] = groups[cat] || []).push(e.text);
+                    }
+                    let otherKeys = Object.keys(groups).filter(k => !SECTIONS.find(s => s.id === k));
+                    if (otherKeys.length) {
+                        SECTIONS.push({id: '__other__', label: 'Other', color: '#aaaaaa'});
+                        groups['__other__'] = otherKeys.flatMap(k => groups[k]);
+                    }
+                    let html = '<div style="color:#f0c040;font-weight:bold;margin-bottom:6px;font-family:Arial,sans-serif;font-size:14px;">⚔ Combat Log — Turn ' + this.turn + '</div>';
+                    for (let sec of SECTIONS) {
+                        let lines = groups[sec.id];
+                        if (!lines || lines.length === 0) continue;
+                        html += `<div style="color:${sec.color};font-weight:bold;margin-top:8px;margin-bottom:2px;font-size:13px;">${sec.label}</div>`;
+                        for (let line of lines) {
+                            let lineColor = '#ccc';
+                            if (line.includes('INSTANT KILL') || line.includes('[Squeeze]')) lineColor = '#ff6666';
+                            else if (line.includes('Amp:')) lineColor = '#60d0ff';
+                            html += '<div style="color:' + lineColor + ';padding:1px 0 1px 14px;">' + line + '</div>';
+                        }
+                    }
+                    logDiv.innerHTML = html;
                     logDiv.scrollTop = 0;
                 } else if (logDiv) {
                     logDiv.style.display = 'none';
@@ -6173,28 +6200,63 @@
                         this.ctx.font = 'bold 16px Arial';
                         this.ctx.textAlign = 'center';
                         this.ctx.fillText('⚔  Turn Recap  ⚔', CANVAS_W / 2, UI_TOP + 24);
-                        // Combat log lines
+                        // Combat log lines, grouped by category section.
                         let log = game.animation.combatLog || [];
                         let logY = UI_TOP + 42;
                         let lineH = 14;
                         let maxLines = Math.floor((CANVAS_H - logY - 20) / lineH);
-                        this.ctx.font = '11px Arial';
                         this.ctx.textAlign = 'left';
-                        for (let i = 0; i < Math.min(log.length, maxLines); i++) {
-                            let line = log[i];
-                            // Color-code by player
-                            if (line.startsWith('P1')) this.ctx.fillStyle = '#7aa8ff';
-                            else if (line.startsWith('P2')) this.ctx.fillStyle = '#ff8888';
-                            else this.ctx.fillStyle = UI_TEXT_MUTED;
-                            this.ctx.fillText(line, 10, logY + i * lineH);
-                        }
-                        if (log.length > maxLines) {
-                            this.ctx.fillStyle = '#888';
-                            this.ctx.fillText(`... and ${log.length - maxLines} more`, 10, logY + maxLines * lineH);
-                        }
                         if (log.length === 0) {
+                            this.ctx.font = '11px Arial';
                             this.ctx.fillStyle = '#888';
                             this.ctx.fillText('No combat this turn.', 10, logY);
+                        } else {
+                            const RECAP_SECTIONS = [
+                                { id: 'movement', label: '⚡ Movement & Hazards', sectionColor: '#ffa040' },
+                                { id: 'combat',   label: '⚔ Combat',             sectionColor: '#e0e080' },
+                                { id: 'finale',   label: '✨ Finale',             sectionColor: '#ff8060' },
+                                { id: 'status',   label: '🛡 Status',             sectionColor: '#80c0ff' },
+                                { id: 'weaver',   label: '⚖ The Weaver',         sectionColor: '#c084fc' }
+                            ];
+                            // Bucket entries by category
+                            let groups = {};
+                            for (let e of log) {
+                                let cat = (e && e.category) || 'other';
+                                (groups[cat] = groups[cat] || []).push(e.text);
+                            }
+                            // Lines that fall outside known categories go in
+                            // an 'other' bucket appended at the end.
+                            let otherKeys = Object.keys(groups).filter(k => !RECAP_SECTIONS.find(s => s.id === k));
+                            if (otherKeys.length) {
+                                RECAP_SECTIONS.push({id: '__other__', label: 'Other', sectionColor: '#aaaaaa'});
+                                groups['__other__'] = otherKeys.flatMap(k => groups[k]);
+                            }
+                            let row = 0;
+                            for (let sec of RECAP_SECTIONS) {
+                                let lines = groups[sec.id];
+                                if (!lines || lines.length === 0) continue;
+                                if (row >= maxLines) break;
+                                // Section header
+                                this.ctx.font = 'bold 12px Arial';
+                                this.ctx.fillStyle = sec.sectionColor;
+                                this.ctx.fillText(sec.label, 10, logY + row * lineH);
+                                row++;
+                                this.ctx.font = '11px Arial';
+                                for (let line of lines) {
+                                    if (row >= maxLines) break;
+                                    if (line.startsWith('P1')) this.ctx.fillStyle = '#7aa8ff';
+                                    else if (line.startsWith('P2')) this.ctx.fillStyle = '#ff8888';
+                                    else this.ctx.fillStyle = UI_TEXT_MUTED;
+                                    this.ctx.fillText('  ' + line, 10, logY + row * lineH);
+                                    row++;
+                                }
+                            }
+                            // Footer if anything was clipped
+                            let total = log.length + RECAP_SECTIONS.filter(s => groups[s.id] && groups[s.id].length).length;
+                            if (row >= maxLines && total > maxLines) {
+                                this.ctx.fillStyle = '#888';
+                                this.ctx.fillText('… more (scroll log below)', 10, logY + (maxLines - 1) * lineH);
+                            }
                         }
                     } else {
                         // ANIMATING: show progress bar
