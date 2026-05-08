@@ -1378,6 +1378,37 @@
                 // squeeze logic can decide if they're crushed by friendlies.
                 let bounced = new Set();
 
+                // --- HEAD-ON SWAP CANCELLATION ---
+                // Two units cannot swap tiles in a single turn — they would
+                // physically pass through each other. If A's destination is
+                // B's start AND B's destination is A's start, both moves are
+                // cancelled and the units stay put. Detected here before any
+                // movement-dependent logic (gravity well, ley line, phalanx,
+                // charge resolution, bumps) so those passes see the corrected
+                // plans.
+                let swapCancelled = new Set();
+                for (let u of allUnits) {
+                    if (swapCancelled.has(u)) continue;
+                    if (u.plannedR == null) continue;
+                    if (u.plannedR === u.r && u.plannedC === u.c) continue;
+                    for (let v of allUnits) {
+                        if (v === u || swapCancelled.has(v)) continue;
+                        if (v.r !== u.plannedR || v.c !== u.plannedC) continue;
+                        if (v.plannedR == null) continue;
+                        if (v.plannedR === u.r && v.plannedC === u.c) {
+                            // Both planned to take the other's tile — swap.
+                            u.plannedR = u.r; u.plannedC = u.c;
+                            v.plannedR = v.r; v.plannedC = v.c;
+                            swapCancelled.add(u);
+                            swapCancelled.add(v);
+                            let pName = u.player === 1 ? 'P1' : 'P2';
+                            let vName = v.player === 1 ? 'P1' : 'P2';
+                            this.logEvt('movement', `${pName} ${u.type} and ${vName} ${v.type} attempt to swap tiles — head-on collision, both stalled`);
+                            break;
+                        }
+                    }
+                }
+
                 // --- GRAVITY WELL SLOW ---
                 // Enemy units whose planned movement path crosses an active
                 // well tile have their movement capped to 1 step this turn.
