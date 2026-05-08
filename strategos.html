@@ -2788,7 +2788,7 @@
                 let p2MovDmgs = movementDmgs.filter(d => phase2Units.includes(d.unit));
                 // Stagger adds extra wall-clock time per unit beyond the
                 // first so each character's beat doesn't get squashed.
-                let p2Stagger = Math.max(0, phase2Units.length - 1) * 200;
+                let p2Stagger = Math.max(0, phase2Units.length - 1) * 350;
                 phases.push({
                     id: 'lambs',
                     label: 'Lambs',
@@ -2817,7 +2817,7 @@
                     return aLethal - bLethal;
                 });
 
-                let p3Stagger = Math.max(0, phase3Units.length - 1) * 200;
+                let p3Stagger = Math.max(0, phase3Units.length - 1) * 350;
                 phases.push({
                     id: 'brawlers',
                     label: 'Brawlers',
@@ -2839,7 +2839,7 @@
                 let p4DmgEntries = buildDamageEntries(p4Dmgs);
                 p4DmgEntries.sort((a, b) => (a.dead ? 1 : 0) - (b.dead ? 1 : 0));
 
-                let p4Stagger = Math.max(0, phase4Units.length - 1) * 200;
+                let p4Stagger = Math.max(0, phase4Units.length - 1) * 350;
                 phases.push({
                     id: 'strikers',
                     label: 'Untouched Strikers',
@@ -2928,9 +2928,12 @@
                 // characters so each unit's beat plays in sequence and the
                 // viewer can read who's doing what. Bumped/cascade-redirected
                 // units already have specific timing and are skipped.
-                let staggerStep = 0.12;
+                // Adaptive stagger step keeps the last unit's slide window
+                // ≥ 30% of moveT no matter how many units are in the phase.
                 let staggerLists = [phase2Units, phase3Units, phase4Units];
                 for (let list of staggerLists) {
+                    if (list.length < 2) continue;
+                    let staggerStep = Math.min(0.22, 0.7 / (list.length - 1));
                     for (let i = 0; i < list.length; i++) {
                         let u = list[i];
                         if (bumpedRedirect.has(u)) continue;
@@ -5213,10 +5216,25 @@
                     this.ctx.fillText('\u2726', bx, by);
                 }
 
-                // --- Attack effects ---
+                // --- Attack effects (staggered per attacker slot) ---
+                // Each attack flashes at its attacker's slot inside the
+                // attack window so the viewer can see hits land one after
+                // another instead of a single chord. Slot index comes from
+                // phase.units (the staggered classification order).
                 if (inAttackWindow && phase.attacks && phase.attacks.length > 0) {
-                    let flashA = Math.sin(attackLocalT * Math.PI);
-                    this.drawAttackEffects(game, { attacks: phase.attacks }, flashA);
+                    let nUnits = (phase.units && phase.units.length) || 1;
+                    let attackStaggerStep = nUnits > 1 ? Math.min(0.22, 0.65 / (nUnits - 1)) : 0;
+                    for (let a of phase.attacks) {
+                        let slot = phase.units ? phase.units.indexOf(a.unit) : -1;
+                        if (slot < 0) slot = 0;
+                        let off = slot * attackStaggerStep;
+                        let myT = (attackLocalT - off) / Math.max(0.1, 1 - off);
+                        if (myT <= 0) continue;
+                        if (myT >= 1) myT = 1;
+                        let aFlash = Math.sin(myT * Math.PI);
+                        if (aFlash <= 0.01) continue;
+                        this.drawAttackEffects(game, { attacks: [a] }, aFlash);
+                    }
                 }
 
                 // --- Floating damage numbers ---
