@@ -1364,7 +1364,25 @@
                         if (path.length < 2) continue;
                         for (let ley of this._leyLines) {
                             if (ley.player === u.player) continue;
-                            let crossings = this.countLeyLineCrossings(path, ley);
+                            // Walk the path step-by-step counting wall crossings
+                            // and record the moveT and tile for each crossing so
+                            // the renderer can pause + tick at that moment.
+                            let crossingSteps = [];
+                            for (let i = 1; i < path.length; i++) {
+                                let prev = path[i-1], cur = path[i];
+                                let crossed = 0;
+                                if (ley.axis === 'row') {
+                                    let R = ley.index;
+                                    if ((prev.r === R - 1 && cur.r === R) || (prev.r === R && cur.r === R - 1)) crossed++;
+                                    if ((prev.r === R && cur.r === R + 1) || (prev.r === R + 1 && cur.r === R)) crossed++;
+                                } else {
+                                    let C = ley.index;
+                                    if ((prev.c === C - 1 && cur.c === C) || (prev.c === C && cur.c === C - 1)) crossed++;
+                                    if ((prev.c === C && cur.c === C + 1) || (prev.c === C + 1 && cur.c === C)) crossed++;
+                                }
+                                for (let k = 0; k < crossed; k++) crossingSteps.push(i);
+                            }
+                            let crossings = crossingSteps.length;
                             if (crossings === 0) continue;
                             let perWall = Math.ceil(u.maxHp * 0.15);
                             let total = perWall * crossings;
@@ -1377,6 +1395,21 @@
                             }
                             for (let cu of ley.casters) {
                                 if (!cu._activeSynergies.includes('LeyLine Hit')) cu._activeSynergies.push('LeyLine Hit');
+                            }
+                            // Record per-crossing hitch data for animation:
+                            // each entry has the moveT trigger, damage amount,
+                            // and the post-step tile. A 'hitch' is the brief
+                            // freeze of the slide so the player can register
+                            // the wall hit + see the damage tick.
+                            let pathLen = Math.max(1, path.length - 1);
+                            if (!u._barrierHitches) u._barrierHitches = [];
+                            for (let stepIdx of crossingSteps) {
+                                u._barrierHitches.push({
+                                    moveT: stepIdx / pathLen,
+                                    amount: perWall,
+                                    tile: {r: path[stepIdx].r, c: path[stepIdx].c},
+                                    color: '#d8b8ff' // Weaver violet
+                                });
                             }
                         }
                     }
@@ -2492,6 +2525,8 @@
                     }
                     let blinked = !!u._blinked;
                     if (u._blinked) u._blinked = false;
+                    let hitches = u._barrierHitches || null;
+                    if (u._barrierHitches) u._barrierHitches = null; // consume
                     moves.push({
                         unit: u,
                         startR: orig.r,
@@ -2499,7 +2534,8 @@
                         endR, endC,
                         alive,
                         blinked,
-                        delayInPhase: 0
+                        delayInPhase: 0,
+                        barrierHitches: hitches
                     });
                 }
 
@@ -4851,6 +4887,8 @@
                             //   bumpFinishAt (0..1) — compresses the move's
                             //     finish window so bumped units are out of
                             //     the way before the bumper arrives.
+                            //   barrierHitches — slow-mo freezes when the
+                            //     unit crosses a damage barrier (Ley Line).
                             let myMoveT = moveT;
                             if (m.moveStartOffset && m.moveStartOffset > 0) {
                                 myMoveT = Math.max(0, Math.min(1,
@@ -4860,6 +4898,18 @@
                             let finishAt = (m.bumpFinishAt && m.bumpFinishAt > 0 && m.bumpFinishAt < 1)
                                 ? m.bumpFinishAt : 1;
                             myMoveT = Math.min(1, myMoveT / finishAt);
+                            // Apply barrier hitch — pin position briefly when
+                            // crossing a damage barrier so the damage tick
+                            // reads as a beat in the slide.
+                            if (m.barrierHitches && m.barrierHitches.length) {
+                                let hitchDur = 0.12; // 12% of moveT held still
+                                for (let h of m.barrierHitches) {
+                                    if (myMoveT > h.moveT && myMoveT < h.moveT + hitchDur) {
+                                        myMoveT = h.moveT;
+                                        break;
+                                    }
+                                }
+                            }
                             let myEased = myMoveT < 0.5
                                 ? 4 * myMoveT * myMoveT * myMoveT
                                 : 1 - Math.pow(-2 * myMoveT + 2, 3) / 2;
@@ -4871,14 +4921,33 @@
                     // Death sequencing: drive both the topple and post-death
                     // hide off the actual death blow landing, not the unit's
                     // classified phase. deathPhaseIdx is the phase where
-                    // displayedHp first reaches 0.
+                    // displayedHp first reaches 0. lastDmgPhaseIdx is the
+                    // last phase that lands a damage event on this unit —
+                    // we keep the body visible (in a knocked-down state)
+                    // through that phase so additional hits still have a
+                    // target to land on, even though the unit was already
+                    // killed by an earlier blow.
                     let deathPhaseIdx = !m.alive ? this.getDeathPhaseIndex(m.unit, anim) : -1;
-                    // Skip drawing in any phase AFTER the unit died.
-                    let skipPostDeath = !m.alive && deathPhaseIdx >= 0 && anim.currentPhaseIndex > deathPhaseIdx;
+                    let lastDmgPhaseIdx = -1;
+                    let dmgArr = anim.damagesPerPhase && anim.damagesPerPhase.get(m.unit);
+                    if (dmgArr) {
+                        for (let i = dmgArr.length - 1; i >= 0; i--) {
+                            if ((dmgArr[i] || 0) > 0) { lastDmgPhaseIdx = i; break; }
+                        }
+                    }
+                    let bodyHoldUntil = Math.max(deathPhaseIdx, lastDmgPhaseIdx);
+                    // Skip drawing only AFTER the last damage landing.
+                    let skipPostDeath = !m.alive && deathPhaseIdx >= 0
+                        && anim.currentPhaseIndex > bodyHoldUntil;
                     if (skipPostDeath) continue;
                     // Topple in the unit's death phase only — once damage has landed.
                     let showDeath = !m.alive && deathPhaseIdx === anim.currentPhaseIndex
                         && phaseT >= attackStart;
+                    // Knocked-down: dead unit still on screen because more
+                    // damage is coming in this or later phases.
+                    let isFallen = !m.alive && deathPhaseIdx >= 0
+                        && anim.currentPhaseIndex > deathPhaseIdx
+                        && anim.currentPhaseIndex <= bodyHoldUntil;
                     // Legacy near-death flag retained for any external checks
                     // but no longer drives wobble (the topple covers it now).
                     let isNearDeath = !m.alive && anim.nearDeathUnits && anim.nearDeathUnits.has(m.unit);
@@ -4899,8 +4968,8 @@
                     drawList.push({
                         unit: m.unit, ar, ac, alive: m.alive, alpha,
                         startR: m.startR, startC: m.startC, endR: m.endR, endC: m.endC,
-                        blinked: m.blinked, isNearDeath, showDeath, isDangerGlow,
-                        unitPhaseIdx
+                        blinked: m.blinked, isNearDeath, showDeath, isFallen, isDangerGlow,
+                        unitPhaseIdx, move: m
                     });
                 }
 
@@ -5005,6 +5074,17 @@
                         ao.scaleX = 1 - deathT * 0.3;
                         ao.scaleY = 1 - deathT * 0.3;
                     }
+                    // Knocked-down body — already-killed unit being struck
+                    // again in a later phase. Drawn at full topple, faded,
+                    // with a subtle red haze so the player can tell this is
+                    // a corpse taking redundant damage.
+                    if (d.isFallen) {
+                        let toppleDir = d.unit.player === 1 ? 1 : -1;
+                        ao.rotate = (ao.rotate || 0) + toppleDir * 0.8;
+                        ao.scaleX = 0.7;
+                        ao.scaleY = 0.7;
+                        unitAlpha *= 0.55;
+                    }
 
                     // Danger glow
                     if (d.isDangerGlow) {
@@ -5044,6 +5124,46 @@
                     this.ctx.globalAlpha = unitAlpha;
                     this.drawUnit(d.unit, false, [d.ar, d.ac], ao);
                     this.ctx.globalAlpha = 1;
+
+                    // --- Barrier hitch popup ---
+                    // While the unit is paused at a Ley Line crossing, float
+                    // a tinted "-X" tick from their current tile so the player
+                    // sees the wall hit register beat-by-beat instead of a
+                    // single cumulative popup later.
+                    if (d.unitPhaseIdx === anim.currentPhaseIndex && d.move && d.move.barrierHitches && !d.blinked) {
+                        // Recompute the unit's current effective myMoveT
+                        let m = d.move;
+                        let myMoveT = moveT;
+                        if (m.moveStartOffset && m.moveStartOffset > 0) {
+                            myMoveT = Math.max(0, Math.min(1,
+                                (moveT - m.moveStartOffset) /
+                                Math.max(0.05, 1 - m.moveStartOffset)));
+                        }
+                        let finishAt = (m.bumpFinishAt && m.bumpFinishAt > 0 && m.bumpFinishAt < 1) ? m.bumpFinishAt : 1;
+                        myMoveT = Math.min(1, myMoveT / finishAt);
+                        let hitchDur = 0.12;
+                        for (let h of m.barrierHitches) {
+                            if (myMoveT > h.moveT && myMoveT < h.moveT + hitchDur) {
+                                let localT = (myMoveT - h.moveT) / hitchDur;
+                                let alpha = localT < 0.7 ? 1 : Math.max(0, 1 - (localT - 0.7) / 0.3);
+                                let [px, py] = this.isoCenter(d.ar, d.ac);
+                                py -= 30 + 20 * localT;
+                                let txt = '-' + h.amount;
+                                this.ctx.save();
+                                this.ctx.globalAlpha = alpha;
+                                this.ctx.font = 'bold 18px Arial';
+                                this.ctx.textAlign = 'center';
+                                this.ctx.textBaseline = 'middle';
+                                this.ctx.lineWidth = 4;
+                                this.ctx.strokeStyle = '#000';
+                                this.ctx.strokeText(txt, px, py);
+                                this.ctx.fillStyle = h.color || '#d8b8ff';
+                                this.ctx.fillText(txt, px, py);
+                                this.ctx.restore();
+                                break; // only one hitch active at a time
+                            }
+                        }
+                    }
                 }
 
                 // --- Blink sparkles ---
@@ -5253,20 +5373,40 @@
                         ar = m.startR;
                         ac = m.startC;
                     }
-                    // Death sequencing: hide dead units once the death blow
-                    // has landed (their displayedHp reached 0). For inter-
-                    // phase delays this means the unit who died in the just-
-                    // completed phase is gone for subsequent rest renders.
+                    // Death sequencing: a dead unit stays drawn (knocked-
+                    // down) through any phase that still lands damage on
+                    // them, so additional hits visualize on the body. After
+                    // their last damage event we hide them.
                     let deathPhaseIdx = !m.alive ? this.getDeathPhaseIndex(m.unit, anim) : -1;
                     let dh = anim.paused ? m.unit.hp : this.getDisplayedHp(m.unit, anim, null, 0);
-                    if (!m.alive && dh <= 0) continue; // dead and the blow has landed → off-screen
-                    drawList.push({ unit: m.unit, ar, ac, displayedHp: dh });
+                    let lastDmgPhaseIdx = -1;
+                    let dmgArr = anim.damagesPerPhase && anim.damagesPerPhase.get(m.unit);
+                    if (dmgArr) {
+                        for (let i = dmgArr.length - 1; i >= 0; i--) {
+                            if ((dmgArr[i] || 0) > 0) { lastDmgPhaseIdx = i; break; }
+                        }
+                    }
+                    let bodyHoldUntil = Math.max(deathPhaseIdx, lastDmgPhaseIdx);
+                    if (!m.alive && deathPhaseIdx >= 0 && anim.currentPhaseIndex > bodyHoldUntil) continue;
+                    let isFallen = !m.alive && deathPhaseIdx >= 0
+                        && anim.currentPhaseIndex > deathPhaseIdx
+                        && anim.currentPhaseIndex <= bodyHoldUntil;
+                    drawList.push({ unit: m.unit, ar, ac, displayedHp: dh, isFallen });
                 }
                 drawList.sort((a, b) => (a.ar + a.ac) - (b.ar + b.ac));
                 for (let d of drawList) {
                     let ao = {};
                     ao.displayedHp = d.displayedHp;
+                    let savedAlpha = this.ctx.globalAlpha;
+                    if (d.isFallen) {
+                        let toppleDir = d.unit.player === 1 ? 1 : -1;
+                        ao.rotate = toppleDir * 0.8;
+                        ao.scaleX = 0.7;
+                        ao.scaleY = 0.7;
+                        this.ctx.globalAlpha = 0.55;
+                    }
                     this.drawUnit(d.unit, false, [d.ar, d.ac], ao);
+                    this.ctx.globalAlpha = savedAlpha;
                     this.ctx.globalAlpha = 1;
                 }
             }
