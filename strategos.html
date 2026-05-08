@@ -1397,6 +1397,10 @@
                         if (v.plannedR == null) continue;
                         if (v.plannedR === u.r && v.plannedC === u.c) {
                             // Both planned to take the other's tile — swap.
+                            // Remember each unit's intended target so the
+                            // animation can show a brief lurch-and-recoil.
+                            u._stalledTowards = {r: u.plannedR, c: u.plannedC};
+                            v._stalledTowards = {r: v.plannedR, c: v.plannedC};
                             u.plannedR = u.r; u.plannedC = u.c;
                             v.plannedR = v.r; v.plannedC = v.c;
                             swapCancelled.add(u);
@@ -2615,6 +2619,8 @@
                     if (u._blinked) u._blinked = false;
                     let hitches = u._barrierHitches || null;
                     if (u._barrierHitches) u._barrierHitches = null; // consume
+                    let stalled = u._stalledTowards || null;
+                    if (u._stalledTowards) u._stalledTowards = null; // consume
                     // Compute path-follow route avoiding tiles occupied by
                     // other units at the start of the turn. Skips for non-
                     // movement (start === end) and blink (handled separately).
@@ -2637,6 +2643,7 @@
                         blinked,
                         delayInPhase: 0,
                         barrierHitches: hitches,
+                        stalledTowards: stalled,
                         path
                     });
                 }
@@ -5037,6 +5044,17 @@
                             let myEased = myMoveT < 0.5
                                 ? 4 * myMoveT * myMoveT * myMoveT
                                 : 1 - Math.pow(-2 * myMoveT + 2, 3) / 2;
+                            // Stalled (head-on swap): lurch toward the
+                            // intended target, then recoil back to origin.
+                            // myMoveT 0..0.5 = lurch out, 0.5..1.0 = recoil.
+                            if (m.stalledTowards) {
+                                let lurchPhase = myMoveT < 0.5
+                                    ? myMoveT * 2
+                                    : Math.max(0, 2 - myMoveT * 2);
+                                let lurchAmt = 0.35;
+                                ar = m.startR + (m.stalledTowards.r - m.startR) * lurchAmt * lurchPhase;
+                                ac = m.startC + (m.stalledTowards.c - m.startC) * lurchAmt * lurchPhase;
+                            } else
                             // Path-follow: walk segment-by-segment along the
                             // BFS-routed path so the unit doesn't visually
                             // glide across occupied tiles. Falls back to
@@ -5107,7 +5125,8 @@
                         unit: m.unit, ar, ac, alive: m.alive, alpha,
                         startR: m.startR, startC: m.startC, endR: m.endR, endC: m.endC,
                         blinked: m.blinked, isNearDeath, showDeath, isFallen, isDangerGlow,
-                        unitPhaseIdx, move: m
+                        unitPhaseIdx, move: m,
+                        stalledTowards: m.stalledTowards || null
                     });
                 }
 
@@ -5262,6 +5281,40 @@
                     this.ctx.globalAlpha = unitAlpha;
                     this.drawUnit(d.unit, false, [d.ar, d.ac], ao);
                     this.ctx.globalAlpha = 1;
+
+                    // --- Stalled (head-on swap) tag ---
+                    // Show a brief red "✕ stalled" floater near the lurch
+                    // peak so the player understands why the move failed.
+                    if (d.unitPhaseIdx === anim.currentPhaseIndex && d.stalledTowards) {
+                        // Recompute myMoveT for this unit (mirrors interp logic)
+                        let m2 = d.move;
+                        let myMoveT = moveT;
+                        if (m2.moveStartOffset && m2.moveStartOffset > 0) {
+                            myMoveT = Math.max(0, Math.min(1,
+                                (moveT - m2.moveStartOffset) /
+                                Math.max(0.05, 1 - m2.moveStartOffset)));
+                        }
+                        // Tag visible from the start of the lurch through the
+                        // end of the recoil. Peaks around the apex.
+                        if (myMoveT > 0.05 && myMoveT < 0.95) {
+                            let peak = 1 - Math.abs(myMoveT - 0.5) * 2; // 0→1→0
+                            let alpha = Math.max(0, Math.min(1, peak * 1.2));
+                            let [px, py] = this.isoCenter(d.ar, d.ac);
+                            py -= 30 + 10 * peak;
+                            this.ctx.save();
+                            this.ctx.globalAlpha = alpha;
+                            this.ctx.font = 'bold 13px Arial';
+                            this.ctx.textAlign = 'center';
+                            this.ctx.textBaseline = 'middle';
+                            this.ctx.lineWidth = 3;
+                            this.ctx.strokeStyle = '#000';
+                            let txt = '✕ stalled';
+                            this.ctx.strokeText(txt, px, py);
+                            this.ctx.fillStyle = '#ff6060';
+                            this.ctx.fillText(txt, px, py);
+                            this.ctx.restore();
+                        }
+                    }
 
                     // --- Barrier hitch popup ---
                     // While the unit is paused at a Ley Line crossing, float
