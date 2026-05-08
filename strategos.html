@@ -1206,6 +1206,55 @@
                 return targets;
             }
 
+            // BFS-route a unit from (sr,sc) to (er,ec) avoiding any tile in
+            // blockedSet (Set of "r,c" strings). Used by the renderer so the
+            // animated slide follows the path the BFS would have computed at
+            // planning time — never visually crossing an occupied tile.
+            // The destination tile is allowed even if blocked (e.g. a Knight
+            // ending on a Squire's tile that's been bumped). Chargers ignore
+            // blocking and bowl straight through their mid-tile.
+            computeAnimPath(unit, sr, sc, er, ec, blockedSet) {
+                if (sr === er && sc === ec) return [{r: sr, c: sc}];
+                let dist = Math.max(Math.abs(er - sr), Math.abs(ec - sc));
+                let isStraightCharge = dist === 2
+                    && (sr === er || sc === ec)
+                    && unit && (unit.type === 'Knight' || unit.type === 'Paladin');
+                if (isStraightCharge) {
+                    return [
+                        {r: sr, c: sc},
+                        {r: (sr + er) / 2, c: (sc + ec) / 2},
+                        {r: er, c: ec}
+                    ];
+                }
+                let dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+                if (unit && STATS[unit.type] && STATS[unit.type].diag_move) {
+                    dirs = dirs.concat([[1,1],[1,-1],[-1,1],[-1,-1]]);
+                }
+                let visited = new Set();
+                visited.add(`${sr},${sc}`);
+                let queue = [{r: sr, c: sc, path: [{r: sr, c: sc}]}];
+                let cap = 6; // safety: max path length to consider
+                while (queue.length) {
+                    let cur = queue.shift();
+                    if (cur.path.length > cap) continue;
+                    for (let [dr, dc] of dirs) {
+                        let nr = cur.r + dr, nc = cur.c + dc;
+                        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+                        let key = `${nr},${nc}`;
+                        if (visited.has(key)) continue;
+                        if (nr === er && nc === ec) {
+                            return [...cur.path, {r: nr, c: nc}];
+                        }
+                        if (blockedSet.has(key)) continue;
+                        visited.add(key);
+                        queue.push({r: nr, c: nc, path: [...cur.path, {r: nr, c: nc}]});
+                    }
+                }
+                // No valid route — fall back to direct linear (shouldn't
+                // normally happen since BFS at planning would've blocked it).
+                return [{r: sr, c: sc}, {r: er, c: ec}];
+            }
+
             // Walk a tile-by-tile path from (r0,c0) to (r1,c1). Returns the
             // list of tiles INCLUDING start and end. Path supports orthogonal,
             // diagonal, and 2-tile charges (linear in row or column).
@@ -2535,6 +2584,19 @@
                     if (u._blinked) u._blinked = false;
                     let hitches = u._barrierHitches || null;
                     if (u._barrierHitches) u._barrierHitches = null; // consume
+                    // Compute path-follow route avoiding tiles occupied by
+                    // other units at the start of the turn. Skips for non-
+                    // movement (start === end) and blink (handled separately).
+                    let path = null;
+                    if ((orig.r !== endR || orig.c !== endC) && !blinked) {
+                        let blocked = new Set();
+                        for (let v of allUnits) {
+                            if (v === u) continue;
+                            let p = origPos.get(v);
+                            if (p) blocked.add(`${p.r},${p.c}`);
+                        }
+                        path = this.computeAnimPath(u, orig.r, orig.c, endR, endC, blocked);
+                    }
                     moves.push({
                         unit: u,
                         startR: orig.r,
@@ -2543,7 +2605,8 @@
                         alive,
                         blinked,
                         delayInPhase: 0,
-                        barrierHitches: hitches
+                        barrierHitches: hitches,
+                        path
                     });
                 }
 
@@ -4943,8 +5006,22 @@
                             let myEased = myMoveT < 0.5
                                 ? 4 * myMoveT * myMoveT * myMoveT
                                 : 1 - Math.pow(-2 * myMoveT + 2, 3) / 2;
-                            ar = m.startR + (m.endR - m.startR) * myEased;
-                            ac = m.startC + (m.endC - m.startC) * myEased;
+                            // Path-follow: walk segment-by-segment along the
+                            // BFS-routed path so the unit doesn't visually
+                            // glide across occupied tiles. Falls back to
+                            // straight interpolation if no path was computed.
+                            if (m.path && m.path.length >= 2) {
+                                let segs = m.path.length - 1;
+                                let segT = myEased * segs;
+                                let segIdx = Math.min(segs - 1, Math.floor(segT));
+                                let segLocal = segT - segIdx;
+                                let s = m.path[segIdx], e2 = m.path[segIdx + 1];
+                                ar = s.r + (e2.r - s.r) * segLocal;
+                                ac = s.c + (e2.c - s.c) * segLocal;
+                            } else {
+                                ar = m.startR + (m.endR - m.startR) * myEased;
+                                ac = m.startC + (m.endC - m.startC) * myEased;
+                            }
                         }
                     }
 
